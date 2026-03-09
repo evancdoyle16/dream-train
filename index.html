@@ -1,0 +1,3621 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Dream Train</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&display=swap');
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { width: 100%; height: 100%; overflow: hidden; background: #0c0614; }
+canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+#overlay {
+    position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(12,6,20,0.92);
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    color: #ff7b00; font-family: 'Bebas Neue', sans-serif; cursor: pointer; z-index: 10;
+    transition: opacity 0.6s;
+}
+#overlay h1 {
+    font-size: 22vw; line-height: 0.82; margin-bottom: 0.15em;
+    color: #ffb300; letter-spacing: 0.06em; text-transform: uppercase;
+    text-shadow: 0 0 40px #ff4500, 0 0 80px #dc143c, 0 0 120px #8b0020;
+    display: flex; flex-direction: column; align-items: center;
+}
+#overlay p { font-size: 1.1em; opacity: 0.6; color: #ff4500; letter-spacing: 0.1em; }
+#overlay .hint { font-size: 0.9em; opacity: 0.35; margin-top: 1.2em; color: #8b0020; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="overlay">
+    <h1><span>Dream</span><span>Train</span></h1>
+    <p>Click anywhere to initialize</p>
+</div>
+<script>
+(() => {
+    const canvas = document.getElementById('c');
+    const ctx = canvas.getContext('2d');
+    const overlay = document.getElementById('overlay');
+    const FONT = "'Bebas Neue', sans-serif";
+
+    // ─── Config ───
+    const CHORD_BTN_H = 54, CHORD_GAP = 12, BOTTOM_PAD = 14;
+    const PIVOT_BTN_H = 36, PIVOT_GAP = 8;   // key-change suggestion row
+    const WHITE_KEY_W = 52, BLACK_KEY_W = 32;
+    const WHITE_KEY_H = 152, BLACK_KEY_H = 96;
+    const KEY_TOP_PAD = 22;  // breathing room above keys inside the panel
+    const KEYBOARD_HEIGHT = KEY_TOP_PAD + WHITE_KEY_H + CHORD_GAP + CHORD_BTN_H + PIVOT_GAP + PIVOT_BTN_H + BOTTOM_PAD + 72;
+    const KEY_SEL_W = 64;
+    const SCROLL_SPEED = 28;
+    const GRAVITY = 160;
+    const BOUNCE_DAMP = 0.6;
+    const MIN_BOUNCE_VEL = 50;
+    const ORB_RADIUS = 8;
+    const MAX_BOUNCES = 14;
+    const MAX_ORBS = 40;
+    const TRAIL_LEN = 52;
+    // ─── Drum sequencer constants ───
+    const DRUM_ROWS    = ['KICK','C-HH','O-HH','SNARE','RIM'];
+    const DRUM_STEPS   = 32;
+    const DRUM_TAB_H   = 26;   // tab strip height
+    const DRUM_LABEL_W = 62;   // row label column width
+    const DRUM_BPM_W   = 72;   // BPM panel width (left of labels)
+    const DRUM_CTRL_W  = 148;  // right control panel width
+
+    const SCROLL_MULTS = [0.3, 0.6, 1.0];
+
+    // ─── Synthwave Palette (warm/red-leaning) ───
+    const SW = {
+        hotPink: '#ff1a5e', crimson: '#dc143c', magenta: '#e8115b',
+        orange: '#ff4500', amber: '#ff7b00', yellow: '#ffb300',
+        deepRed: '#8b0020', purple: '#6a1b4d', darkNavy: '#0c0614',
+        deepPurple: '#1a0a1e', gridRed: '#3a1020'
+    };
+    const SHAPE_COLORS = [SW.hotPink, SW.crimson, SW.orange, SW.amber, SW.magenta];
+
+    // ─── 3D Geometry Definitions ───
+    const GEOM = {};
+    GEOM.cube = {
+        verts: [[-1,-1,-1],[1,-1,-1],[1,1,-1],[-1,1,-1],[-1,-1,1],[1,-1,1],[1,1,1],[-1,1,1]],
+        edges: [[0,1],[1,2],[2,3],[3,0],[4,5],[5,6],[6,7],[7,4],[0,4],[1,5],[2,6],[3,7]]
+    };
+    GEOM.octa = {
+        verts: [[0,-1.2,0],[1,0,0],[0,0,1],[-1,0,0],[0,0,-1],[0,1.2,0]],
+        edges: [[0,1],[0,2],[0,3],[0,4],[5,1],[5,2],[5,3],[5,4],[1,2],[2,3],[3,4],[4,1]]
+    };
+    GEOM.tetra = {
+        verts: [[1,1,1],[-1,-1,1],[-1,1,-1],[1,-1,-1]],
+        edges: [[0,1],[0,2],[0,3],[1,2],[1,3],[2,3]]
+    };
+    const phi = (1+Math.sqrt(5))/2;
+    GEOM.icosa = {
+        verts: [[-1,phi,0],[1,phi,0],[-1,-phi,0],[1,-phi,0],[0,-1,phi],[0,1,phi],[0,-1,-phi],[0,1,-phi],[phi,0,-1],[phi,0,1],[-phi,0,-1],[-phi,0,1]],
+        edges: [[0,1],[0,5],[0,7],[0,10],[0,11],[1,5],[1,7],[1,8],[1,9],[2,3],[2,4],[2,6],[2,10],[2,11],[3,4],[3,6],[3,8],[3,9],[4,5],[4,9],[4,11],[5,9],[5,11],[6,7],[6,8],[6,10],[7,8],[7,10],[8,9],[9,5],[10,11]]
+    };
+    for(const v of GEOM.icosa.verts){const l=Math.sqrt(v[0]*v[0]+v[1]*v[1]+v[2]*v[2]);v[0]/=l;v[1]/=l;v[2]/=l;}
+    // Square-base pyramid
+    GEOM.pyramid = {
+        verts: [[0,-1.5,0],[1,0.7,-1],[1,0.7,1],[-1,0.7,1],[-1,0.7,-1]],
+        edges: [[0,1],[0,2],[0,3],[0,4],[1,2],[2,3],[3,4],[4,1]]
+    };
+    // Triangular prism
+    GEOM.prism = {
+        verts: [[-1,0.9,0],[0.5,0.9,0.87],[0.5,0.9,-0.87],[-1,-0.9,0],[0.5,-0.9,0.87],[0.5,-0.9,-0.87]],
+        edges: [[0,1],[1,2],[2,0],[3,4],[4,5],[5,3],[0,3],[1,4],[2,5]]
+    };
+    // Elongated bipyramid / gemstone
+    GEOM.gem = {
+        verts: [[0,-1.9,0],[1.1,0,0],[0,0,1.1],[-1.1,0,0],[0,0,-1.1],[0,1.9,0]],
+        edges: [[0,1],[0,2],[0,3],[0,4],[1,2],[2,3],[3,4],[4,1],[5,1],[5,2],[5,3],[5,4]]
+    };
+    // Hexagonal ring / torus proxy
+    GEOM.ring = {
+        verts: [
+            [1.2,-0.3,0],[0.6,-0.3,1.04],[-0.6,-0.3,1.04],[-1.2,-0.3,0],[-0.6,-0.3,-1.04],[0.6,-0.3,-1.04],
+            [1.2,0.3,0],[0.6,0.3,1.04],[-0.6,0.3,1.04],[-1.2,0.3,0],[-0.6,0.3,-1.04],[0.6,0.3,-1.04]
+        ],
+        edges: [[0,1],[1,2],[2,3],[3,4],[4,5],[5,0],[6,7],[7,8],[8,9],[9,10],[10,11],[11,6],[0,6],[1,7],[2,8],[3,9],[4,10],[5,11]]
+    };
+    // Wireframe globe — latitude rings + meridian circles for a proper grid sphere
+    GEOM.sphere = (() => {
+        const verts = [], edges = [], n = 16;
+        let vi = 0;
+        // 5 latitude rings: y = -0.85, -0.5, 0 (equator), +0.5, +0.85
+        for(const y of [-0.85, -0.5, 0, 0.5, 0.85]) {
+            const r = Math.sqrt(Math.max(0, 1 - y*y));
+            const base = vi;
+            for(let i = 0; i < n; i++) {
+                const a = i/n * Math.PI * 2;
+                verts.push([r*Math.cos(a), y, r*Math.sin(a)]);
+                edges.push([base+i, base+(i+1)%n]);
+                vi++;
+            }
+        }
+        // 4 meridian great circles at 0°, 45°, 90°, 135°
+        for(const theta of [0, Math.PI/4, Math.PI/2, 3*Math.PI/4]) {
+            const base = vi;
+            const ct = Math.cos(theta), st = Math.sin(theta);
+            for(let i = 0; i < n; i++) {
+                const phi = i/n * Math.PI * 2;
+                const cp = Math.cos(phi);
+                verts.push([cp*ct, Math.sin(phi), cp*st]);
+                edges.push([base+i, base+(i+1)%n]);
+                vi++;
+            }
+        }
+        return {verts, edges};
+    })();
+    // Prism factory — n-sided prism with given half-height
+    function makePrism(n, h, angleOffset) {
+        const verts = [], edges = [];
+        for(let i = 0; i < n; i++) {
+            const a = i/n * Math.PI * 2 + (angleOffset||0);
+            verts.push([Math.cos(a), -h, Math.sin(a)]);
+            verts.push([Math.cos(a),  h, Math.sin(a)]);
+            edges.push([i*2, ((i+1)%n)*2]);
+            edges.push([i*2+1, ((i+1)%n)*2+1]);
+            edges.push([i*2, i*2+1]);
+        }
+        return {verts, edges};
+    }
+    GEOM.hexprism  = makePrism(6,  1.6);           // tall hexagonal column
+    GEOM.pentprism = makePrism(5,  1.5, -Math.PI/2);
+    GEOM.octprism  = makePrism(8,  1.4);            // wide octagonal column
+    GEOM.cyl12     = makePrism(12, 1.8);            // 12-sided — reads as smooth cylinder
+    GEOM.drum      = makePrism(14, 0.65, 0);        // 14-sided wide & squat drum
+    // Wide flat diamond (squashed bipyramid)
+    GEOM.flatgem = {
+        verts: [[0,-0.65,0],[1.4,0,0],[0,0,1.4],[-1.4,0,0],[0,0,-1.4],[0,0.65,0]],
+        edges: [[0,1],[0,2],[0,3],[0,4],[1,2],[2,3],[3,4],[4,1],[5,1],[5,2],[5,3],[5,4]]
+    };
+    // Tall needle diamond
+    GEOM.tallgem = {
+        verts: [[0,-2.4,0],[0.55,0,0],[0,0,0.55],[-0.55,0,0],[0,0,-0.55],[0,2.4,0]],
+        edges: [[0,1],[0,2],[0,3],[0,4],[1,2],[2,3],[3,4],[4,1],[5,1],[5,2],[5,3],[5,4]]
+    };
+    // Octagonal bipyramid — 8-sided diamond, many facets
+    GEOM.octdiamond = (() => {
+        const verts = [[0,-1.9,0]], edges = [], n = 8;
+        for(let i = 0; i < n; i++) verts.push([Math.cos(i/n*Math.PI*2), 0, Math.sin(i/n*Math.PI*2)]);
+        verts.push([0, 1.9, 0]);
+        for(let i = 0; i < n; i++) {
+            edges.push([0, i+1]);
+            edges.push([n+1, i+1]);
+            edges.push([i+1, (i+1)%n+1]);
+        }
+        return {verts, edges};
+    })();
+    const GEOM_TYPES = ['cube','octa','tetra','icosa','pyramid','prism','gem','ring','sphere',
+                        'hexprism','pentprism','octprism','cyl12','drum','flatgem','tallgem','octdiamond'];
+
+    // ─── State ───
+    let W, H, sceneH;
+    let scrl = 0, lastT = 0, globalTime = 0;
+    let audioCtx, dryBus, reverbNode, wetBus, masterBus;
+    let audioReady = false;
+    const orbs = [], geoShapes = [], farShapes = [], dataStreams = [], stars = [];
+    let nextGeoX = 300, nextStreamX = 0, nextFarX = 60;
+    // ─── Drum machine state ───
+    let currentTab    = 'sound'; // 'sound' | 'rhythm'
+    let drumPattern   = Array.from({length:5}, ()=>new Array(32).fill(false));
+    let drumBPM       = 120;
+    let drumPlaying   = false;
+    let drumStep      = -1;
+    let drumStartTime = 0;       // AudioContext time when step 0 was first scheduled (visual sync)
+    let drumNextTime  = 0;       // AudioContext scheduled time of next step
+    let drumSchedTimer= null;
+    let sidechainAmt  = 0.55;   // 0–1
+    let ottMode       = false;  // NORMAL vs OTT sidechain depth
+    let syncEnabled   = false;
+    let drumRevNode   = null;
+    let drumSCGain    = null;    // sidechain gain node (non-kick sounds route through this)
+    let drumBounds    = {};      // bounding boxes for drum UI hit testing
+    let scDragging    = false;   // sidechain knob drag state
+    let scDragStartY  = 0;
+    let scDragStartVal= 0;
+    // ─── Per-drum blooms (visual pulses triggered by each drum hit) ───
+    let bassFlashT = 0; let bassFlashX = 0; let bassFlashY = 0; let bassFlashHue = 0;
+    let kickBloom  = 0; let kickTimes  = []; // kick  → 3D background shapes
+    let chhBloom   = 0; let chhTimes   = []; // C-HH  → front mountains
+    let ohhBloom   = 0; let ohhTimes   = []; // O-HH  → back/distant mountains
+    let snareBloom = 0; let snareTimes = []; // snare → sun
+    let rimBloom   = 0; let rimTimes   = []; // rim   → stars
+
+    let mirrorBuf = null;   // offscreen canvas for permanent scene mirror effect
+
+    let starsInited = false;
+    let scanlineCanvas = null;
+
+    // ─── Notes (chromatic C3–C5) ───
+    const NOTE_NAMES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+    const BLACK_IDX = new Set([1,3,6,8,10]);
+    const notes = [];
+    for (let oct = 3; oct <= 4; oct++) {
+        for (let i = 0; i < 12; i++) {
+            const midi = oct*12+i+12;
+            notes.push({
+                name: NOTE_NAMES[i]+oct, freq: 440*Math.pow(2,(midi-69)/12),
+                isBlack: BLACK_IDX.has(i), hue: [0,18,30,45,185,200,270,295,310,325,340,355][i], pressed: false
+            });
+        }
+    }
+    notes.push({ name:'C5', freq:440*Math.pow(2,(72-69)/12), isBlack:false, hue:0, pressed:false });
+    const whites = notes.filter(n=>!n.isBlack);
+    const blacks = notes.filter(n=>n.isBlack);
+
+    // ─── Key / Mode selector state ───
+    let currentKey  = 0;
+    let currentMode = 0;
+
+    // ─── Pivot suggestion row ───
+    let pivotSuggestions = [];   // [{newKey, modeIdx, label, hue, x,y,w,h, pressed}]
+    let layoutStartX = 0, layoutKbW = 0, layoutPivotY = 0;  // set during layout()
+    let pivotFlashT    = 0;      // 0→1 flash on KEY/MODE spinners after pivot
+    let chordCascadeT  = -1;     // -1=idle, 0→1 sweeps chord buttons in on pivot
+    let pivotHue       = 180;    // hue of last fired pivot (teal default)
+    let currentPreset = 0;
+    let keySelBounds  = { x:0, y:0, w:0, h:0 };
+    let modeSelBounds = { x:0, y:0, w:0, h:0 };
+    let soundSelBounds= { x:0, y:0, w:0, h:0 };
+    let bedBounds     = { x:0, y:0, w:0, h:0 };
+    let octaveBounds  = { x:0, y:0, w:0, h:0 };
+    let currentOctave = 0;   // -2 to +2 semitones offset (integer octaves)
+    let currentBed    = 0;
+    let bedEnabled    = false;
+    let bedGainNode   = null;   // master GainNode → masterBus
+    let bedSrc        = null;   // current AudioBufferSourceNode (synthesis or real)
+    let bedExtraNodes = [];     // extra oscillators/nodes for synthesis (e.g. brook LFOs)
+    let bedLoading    = false;  // true while background fetch is in flight
+    let bedBufCache   = {};     // keyed by preset index — prepared AudioBuffers
+    let bedRevNode    = null;   // ConvolverNode for ambient bed reverb
+    let bedRevWetGain = null;   // wet send level into reverb
+
+    // ─── Auto-play state ───────────────────────────────────────────────────
+    let autoMelody      = false;
+    let autoMelTimeoutId= null;      // setTimeout handle for next melody event
+    let autoMelChord    = 0;         // current chord index in progression
+    let autoMelBounds   = { x:0, y:0, w:0, h:0 };
+    let autoDrum        = false;
+    let autoDrumPrevBar = -1;        // last bar index seen (for 8-bar boundary)
+
+    // ─── Musical modes ───
+    const CHORD_INTERVALS = {
+        'maj7': [0,4,7,11], 'm7': [0,3,7,10], '7': [0,4,7,10], 'm7b5': [0,3,6,10], 'add9': [0,4,7,14]
+    };
+    const MODES = [
+        { name:'Ionian',     short:'ION', scale:[0,2,4,5,7,9,11], quals:['maj7','m7','m7','maj7','7','m7','m7b5'] },
+        { name:'Dorian',     short:'DOR', scale:[0,2,3,5,7,9,10], quals:['m7','m7','maj7','7','m7','m7b5','maj7'] },
+        { name:'Mixolydian', short:'MIX', scale:[0,2,4,5,7,9,10], quals:['7','m7','m7b5','maj7','m7','m7','maj7'] },
+        { name:'Aeolian',    short:'AEO', scale:[0,2,3,5,7,8,10], quals:['m7','m7b5','maj7','m7','m7','maj7','7'] },
+    ];
+
+    // ─── Sound presets ───
+    // synth:'additive' = oscillator stack  |  'fm2' = 2-op FM  |  'fm4' = 4-op DX7 algorithm 5
+    // bVolMult: bounce hit volume scale  |  bCutLo/Hi: filter cutoff range (× freq) on bounce
+    const SOUND_PRESETS = [
+        // DRIFT — warm analog pad, kept exactly as original
+        { name:'DRIFT',  synth:'additive', color:SW.amber,   orbShape:'circle',
+          oscs:[{type:'sine',fm:1,dc:0},{type:'triangle',fm:1,dc:3},{type:'sine',fm:1,dc:-1},{type:'sine',fm:0.5,dc:0}],
+          ft:'lowpass',  fMult:4,   fMax:3500, fQ:0.6,  atk:1.5, vol:0.045,
+          tt:'bandpass', tMult:2,   tQ:1.5,  tVol:0.008, dry:0.20, wet:0.80,
+          bVolMult:1.3, bCutLo:2.5, bCutHi:5.5 },
+
+        // VOID — DX7-style dark beating pad
+        // Two-op FM: sub-harmonic mod + near-unison mod (ratio 1.0007 creates a
+        // ~0.3Hz "breath" beat that evolves slowly over ~3 seconds per cycle)
+        { name:'VOID',   synth:'fm2',      color:SW.deepRed, orbShape:'octagon',
+          carrier:{type:'sine'},
+          mods:[{ratio:0.5, index:1.1}, {ratio:1.0007, index:0.45}],
+          extraOscs:[{type:'sine', fm:0.5, dc:0, gain:0.45}],
+          ft:'lowpass',  fMult:1.4, fMax:800,  fQ:0.3,  atk:3.5, vol:0.055,
+          tt:'lowpass',  tMult:0.5, tQ:0.8,  tVol:0.004, dry:0.10, wet:0.90,
+          bVolMult:1.0, bCutLo:1.2, bCutHi:2.8 },
+
+        // PULSE — Juno-106 chorus pad
+        // Three detuned sawtooth waves (±9 cents simulates BBD chorus) + sub square
+        { name:'PULSE',  synth:'additive', color:SW.orange,  orbShape:'square',
+          oscs:[{type:'sawtooth',fm:1,dc:-9},{type:'sawtooth',fm:1,dc:0},{type:'sawtooth',fm:1,dc:9},{type:'square',fm:0.5,dc:0}],
+          ft:'lowpass',  fMult:4.5, fMax:4000, fQ:0.85, atk:0.5, vol:0.018,
+          tt:'highpass', tMult:3,   tQ:2.0,  tVol:0.007, dry:0.28, wet:0.72,
+          bVolMult:0.70, bCutLo:3,  bCutHi:7  },
+
+        // GLITCH — 2-op FM at ratio 7 (metallic, percussive, inharmonic spread)
+        // High-ratio modulator creates inharmonic spread; bandpass keeps it focused
+        { name:'GLITCH', synth:'fm2',      color:SW.magenta, orbShape:'chevron',
+          carrier:{type:'sine'},
+          mods:[{ratio:7.0, index:0.9}],
+          extraOscs:[{type:'sawtooth', fm:1, dc:0, gain:0.22}],
+          ft:'bandpass', fMult:2.5, fMax:5000, fQ:2.5, atk:0.08, vol:0.018,
+          tt:'bandpass', tMult:3,   tQ:5.0,  tVol:0.009, dry:0.40, wet:0.60,
+          bVolMult:0.60, bCutLo:1.5, bCutHi:3.5 },
+    ];
+
+    // ─── Bed presets (field recordings via Wikimedia Commons) ───
+    // Each preset lists Wikimedia Commons filenames in priority order.
+    // Synthesis plays instantly; real recording swaps in when the fetch completes.
+    // Wikimedia Commons sources. 'files' = known filenames to try first (MP3 transcode preferred).
+    // 'search' = fallback: query the Wikimedia search API to discover real filenames dynamically.
+    const BED_PRESETS = [
+        { name:'RAIN',  color:'#44aaff',
+          files:['Sound_of_rain.ogg', '20060828_rain.ogg', 'Rainfall_in_Exmouth.ogg'],
+          search:'rain rainfall outdoor ambience' },
+        { name:'BROOK', color:'#66ddff',
+          files:['Stream.ogg', 'Brook.ogg', 'Gurgling_brook.ogg', 'Running_water.ogg'],
+          search:'babbling brook stream flowing water outdoor' },
+        { name:'BIRDS', color:'#66cc44',
+          files:['Turdus_merula_20040530.ogg', 'Birdsong_in_the_morning.ogg', 'Birdsong_mild_sunny_day.ogg'],
+          search:'birdsong bird outdoor nature ambience' },
+        { name:'FIRE',  color:'#ff8844',
+          files:['Fire.ogg', 'Fireplace.ogg', 'Fire_crackling.ogg', 'Fireplace_crackling.ogg', 'Bonfire.ogg'],
+          search:'fire crackling fireplace burning logs sound' },
+    ];
+
+    let chords = [];
+
+    function generateChords(keyRoot) {
+        const mode = MODES[currentMode];
+        chords = [];
+        function voiceChord(rootPC, intervals) {
+            const noteIdx = [];
+            for (const iv of intervals) {
+                let idx = rootPC + iv;
+                while (idx > 24) idx -= 12;
+                while (idx < 0)  idx += 12;
+                if (idx >= 0 && idx <= 24 && noteIdx.indexOf(idx) === -1) noteIdx.push(idx);
+            }
+            return noteIdx;
+        }
+        // 8 chords use synthwave palette hues — warm reds/oranges/ambers, cyan, purples, pinks
+        const CHORD_HUES = [0, 18, 35, 185, 270, 300, 325, 345];
+        for (let deg = 0; deg < 7; deg++) {
+            const chordRootPC = (keyRoot + mode.scale[deg]) % 12;
+            const qual = mode.quals[deg];
+            const noteIdx = voiceChord(chordRootPC, CHORD_INTERVALS[qual]);
+            const rootName = NOTE_NAMES[chordRootPC];
+            const dispQual = qual==='m7b5' ? 'ø7' : qual;
+            chords.push({ name: rootName + dispQual, noteIdx, pressed: false, hue: CHORD_HUES[deg], rootPC: chordRootPC, qual });
+        }
+        const add9Idx = voiceChord(keyRoot % 12, CHORD_INTERVALS['add9']);
+        chords.push({ name: NOTE_NAMES[keyRoot % 12] + 'add9', noteIdx: add9Idx, pressed: false, hue: CHORD_HUES[7], rootPC: keyRoot % 12, qual: 'add9' });
+    }
+    generateChords(0);
+
+    // ─── Pivot key-change suggestions ───
+    // For the last-pressed chord, find other key+mode combos where that chord is diatonic.
+    // Returns up to 4 suggestions sorted by harmonic closeness to current key.
+    function getPivotSuggestions(chordRootPC, qual) {
+        const searchQual = (qual === 'add9') ? 'maj7' : qual;  // treat add9 as maj7 for pivoting
+        const results = [];
+        const seen = new Set();
+        for (let modeIdx = 0; modeIdx < MODES.length; modeIdx++) {
+            const mode = MODES[modeIdx];
+            for (let deg = 0; deg < 7; deg++) {
+                if (mode.quals[deg] !== searchQual) continue;
+                // chord root = keyRoot + scale[deg] → keyRoot = chordRoot − scale[deg]
+                const newKey = ((chordRootPC - mode.scale[deg]) % 12 + 12) % 12;
+                if (newKey === currentKey && modeIdx === currentMode) continue;  // already here
+                if (newKey === chordRootPC) continue;  // exclude same root — keep it dramatic
+                const uid = `${newKey}-${modeIdx}`;
+                if (seen.has(uid)) continue;
+                seen.add(uid);
+                // Score: small chromatic distance from current key = closer/smoother
+                const chromaDist = Math.min(
+                    Math.abs(newKey - currentKey),
+                    12 - Math.abs(newKey - currentKey)
+                );
+                // Slight preference for major-feeling modes (ION=0, MIX=2) over minor (DOR=1, AEO=3)
+                const modePenalty = (modeIdx === 1 || modeIdx === 3) ? 1 : 0;
+                const score = chromaDist * 2 + modePenalty;
+                // Hue for button: warm amber range offset by modeIdx for variety
+                const hue = (40 + modeIdx * 28 + newKey * 10) % 360;
+                results.push({ newKey, modeIdx, label: NOTE_NAMES[newKey] + ' ' + MODES[modeIdx].short,
+                                hue, score, pressed: false, x:0, y:0, w:0, h:0 });
+            }
+        }
+        results.sort((a, b) => a.score - b.score);
+        return results.slice(0, 4);
+    }
+
+    function layoutPivotButtons() {
+        const count = pivotSuggestions.length;
+        if (count === 0 || layoutKbW === 0) return;
+        const pivotW = (layoutKbW - (count - 1) * 6) / count;
+        for (let i = 0; i < count; i++) {
+            pivotSuggestions[i].x = layoutStartX + i * (pivotW + 6);
+            pivotSuggestions[i].y = layoutPivotY;
+            pivotSuggestions[i].w = pivotW;
+            pivotSuggestions[i].h = PIVOT_BTN_H;
+        }
+    }
+
+    function updatePivots(chord) {
+        if (!chord) { pivotSuggestions = []; return; }
+        pivotSuggestions = getPivotSuggestions(chord.rootPC, chord.qual);
+        pivotSuggestions.forEach(pv => pv.pvChord = chord);  // store for playback on press
+        layoutPivotButtons();
+    }
+
+    // ─── Seeded random ───
+    function sr(s) { let x = Math.sin(s*12.9898+78.233)*43758.5453; return x-Math.floor(x); }
+
+    // ─── HSL helper ───
+    function hsl(h,s,l,a) {
+        return a===undefined ? `hsl(${h%360},${s}%,${l}%)` : `hsla(${h%360},${s}%,${l}%,${a})`;
+    }
+
+    // ─── Layout ───
+    function layout() {
+        const dpr = window.devicePixelRatio || 1;
+        W = window.innerWidth; H = window.innerHeight;
+        canvas.width = W*dpr; canvas.height = H*dpr;
+        canvas.style.width = W+'px'; canvas.style.height = H+'px';
+        ctx.setTransform(dpr,0,0,dpr,0,0);
+        sceneH = H - KEYBOARD_HEIGHT;
+
+        const kbW = whites.length * WHITE_KEY_W;
+        const startX = (W - kbW) / 2;
+        // ky = top of panel; keyY = where keys actually start (padded down by KEY_TOP_PAD)
+        const ky   = H - KEYBOARD_HEIGHT;
+        const keyY = ky + KEY_TOP_PAD;
+        let wi = 0;
+        for (const n of notes) {
+            if (!n.isBlack) { n.x=startX+wi*WHITE_KEY_W; n.y=keyY; n.w=WHITE_KEY_W-2; n.h=WHITE_KEY_H; n.cx=n.x+n.w/2; wi++; }
+        }
+        for (const n of notes) {
+            if (n.isBlack) { const idx=notes.indexOf(n); const prev=notes.slice(0,idx).filter(m=>!m.isBlack).pop(); if(prev){ n.x=prev.x+prev.w-BLACK_KEY_W/2+1; n.y=keyY; n.w=BLACK_KEY_W; n.h=BLACK_KEY_H; n.cx=n.x+n.w/2; }}
+        }
+
+        const chordY = keyY + WHITE_KEY_H + CHORD_GAP;
+        const chordBtnW = (kbW - (chords.length-1)*6) / chords.length;
+        for (let i = 0; i < chords.length; i++) {
+            chords[i].x = startX + i*(chordBtnW+6);
+            chords[i].y = chordY;
+            chords[i].w = chordBtnW;
+            chords[i].h = CHORD_BTN_H;
+        }
+
+        // Store for pivot button positioning (used by layoutPivotButtons)
+        layoutStartX = startX;
+        layoutKbW    = kbW;
+        layoutPivotY = chordY + CHORD_BTN_H + PIVOT_GAP;
+        layoutPivotButtons();
+
+        // Left panel: key selector (top) + mode selector (bottom), stacked vertically
+        const leftX = startX - KEY_SEL_W - 14;
+        const selH  = Math.floor((WHITE_KEY_H - 8) / 2);
+        keySelBounds  = { x: leftX, y: keyY,          w: KEY_SEL_W, h: selH };
+        modeSelBounds = { x: leftX, y: keyY + selH + 8, w: KEY_SEL_W, h: selH };
+        // Auto-melody button — below the mode dial, spanning the chord+pivot rows
+        autoMelBounds = { x: leftX, y: chordY, w: KEY_SEL_W, h: CHORD_BTN_H + PIVOT_GAP + PIVOT_BTN_H };
+        // Right panel: sound/bed selectors (top, key-height) + octave toggle (chord row height)
+        const rightX     = startX + kbW + 14;
+        const spinH      = CHORD_BTN_H + PIVOT_GAP + PIVOT_BTN_H;
+        const octW       = KEY_SEL_W * 2 + 8;  // spans both columns
+        soundSelBounds = { x: rightX,                 y: keyY,   w: KEY_SEL_W, h: WHITE_KEY_H };
+        bedBounds      = { x: rightX + KEY_SEL_W + 8, y: keyY,   w: KEY_SEL_W, h: WHITE_KEY_H };
+        octaveBounds  = { x: rightX,                  y: chordY, w: octW,      h: spinH };
+
+        calcDrumBounds();
+        initStars();
+        buildScanlineCanvas();
+        // Mirror buffer: left-half capture canvas, sized in physical pixels
+        const dprM = window.devicePixelRatio || 1;
+        mirrorBuf = document.createElement('canvas');
+        mirrorBuf.width  = Math.max(1, Math.round(W / 2 * dprM));
+        mirrorBuf.height = Math.max(1, Math.round(sceneH * dprM));
+    }
+
+    function initStars() {
+        stars.length = 0;
+        for (let i = 0; i < 80; i++) {
+            stars.push({
+                x: Math.random() * W,
+                y: Math.random() * sceneH * 0.42,
+                size: 0.5 + Math.random() * 1.5,
+                twinkleSpeed: 1 + Math.random() * 3,
+                twinklePhase: Math.random() * Math.PI * 2,
+                drift: (Math.random() - 0.5) * 0.15
+            });
+        }
+        starsInited = true;
+    }
+
+    function buildScanlineCanvas() {
+        scanlineCanvas = document.createElement('canvas');
+        scanlineCanvas.width = 1;
+        scanlineCanvas.height = Math.ceil(sceneH);
+        const sctx = scanlineCanvas.getContext('2d');
+        sctx.fillStyle = 'rgba(0,0,0,0.07)';
+        for(let y=0; y<sceneH; y+=3) {
+            sctx.fillRect(0, y, 1, 1);
+        }
+    }
+
+    // ════════════════════════════════════════
+    //  AUDIO ENGINE
+    // ════════════════════════════════════════
+
+    function initAudio() {
+        audioCtx = new (window.AudioContext||window.webkitAudioContext)();
+        const dur=4.5, len=audioCtx.sampleRate*dur;
+        const ir=audioCtx.createBuffer(2,len,audioCtx.sampleRate);
+        for(let ch=0;ch<2;ch++){const d=ir.getChannelData(ch);for(let i=0;i<len;i++)d[i]=(Math.random()*2-1)*Math.pow(1-i/len,2.3);}
+        reverbNode=audioCtx.createConvolver(); reverbNode.buffer=ir;
+        dryBus=audioCtx.createGain(); dryBus.gain.value=0.2;
+        wetBus=audioCtx.createGain(); wetBus.gain.value=0.8;
+        masterBus=audioCtx.createGain(); masterBus.gain.value=0.55;
+        const comp=audioCtx.createDynamicsCompressor();
+        comp.threshold.value=-18; comp.knee.value=12; comp.ratio.value=4;
+        dryBus.connect(comp); reverbNode.connect(wetBus); wetBus.connect(comp);
+        comp.connect(masterBus); masterBus.connect(audioCtx.destination);
+        audioReady=true;
+    }
+
+    function makeSound(freq) {
+        if(!audioReady) return null;
+        const t = audioCtx.currentTime;
+        const p = SOUND_PRESETS[currentPreset];
+        const oscs = [];
+
+        const filter = audioCtx.createBiquadFilter();
+        filter.type = p.ft;
+        filter.frequency.value = Math.min(freq * p.fMult, p.fMax);
+        filter.Q.value = p.fQ;
+
+        const gain = audioCtx.createGain();
+        gain.gain.setValueAtTime(0, t);
+        gain.gain.linearRampToValueAtTime(p.vol, t + p.atk);
+
+        if(p.synth === 'fm2') {
+            // ── 2-operator FM: one or more modulators → single carrier ──────
+            const carrier = audioCtx.createOscillator();
+            carrier.type = p.carrier.type || 'sine';
+            carrier.frequency.value = freq;
+            carrier.connect(filter); carrier.start(t); oscs.push(carrier);
+            for(const mod of p.mods) {
+                const modOsc = audioCtx.createOscillator();
+                modOsc.type = 'sine';
+                modOsc.frequency.value = freq * mod.ratio;
+                const modGain = audioCtx.createGain();
+                modGain.gain.value = freq * mod.index; // FM depth in Hz
+                modOsc.connect(modGain); modGain.connect(carrier.frequency);
+                modOsc.start(t); oscs.push(modOsc);
+            }
+            if(p.extraOscs) for(const c of p.extraOscs) {
+                const o = audioCtx.createOscillator(); const eg = audioCtx.createGain();
+                o.type = c.type; o.frequency.value = freq * c.fm; o.detune.value = c.dc || 0;
+                eg.gain.value = c.gain || 1;
+                o.connect(eg); eg.connect(filter); o.start(t); oscs.push(o);
+            }
+        } else if(p.synth === 'fm4') {
+            // ── 4-operator DX7 Algorithm 5: two independent mod→carrier pairs ─
+            for(const pair of p.pairs) {
+                const car = audioCtx.createOscillator();
+                car.type = 'sine'; car.frequency.value = freq * pair.carrier;
+                const modOsc = audioCtx.createOscillator();
+                modOsc.type = 'sine';
+                modOsc.frequency.value = freq * pair.carrier * pair.modRatio;
+                const modGain = audioCtx.createGain();
+                modGain.gain.value = freq * pair.carrier * pair.modIndex;
+                const pairGain = audioCtx.createGain();
+                pairGain.gain.value = pair.vol;
+                modOsc.connect(modGain); modGain.connect(car.frequency);
+                car.connect(pairGain); pairGain.connect(filter);
+                car.start(t); modOsc.start(t); oscs.push(car, modOsc);
+            }
+        } else if(p.synth === 'arp') {
+            // ── Arpeggiated FM pings — Blade Runner / Vangelis style ──────────
+            // Pre-schedule short metallic FM pings at fixed intervals.
+            // Pings bypass the main gain/filter so each has its own punchy envelope.
+            const intervals  = p.arpIntervals || [0, 7, 12, 7];
+            const stepDur    = p.arpStep      || 0.165;
+            const cycles     = p.arpCycles    || 6;
+            const modRatio   = p.arpModRatio  || 4.5;
+            const modIndex   = p.arpModIndex  || 2.8;
+            const totalSteps = intervals.length * cycles;
+
+            for(let i = 0; i < totalSteps; i++) {
+                const semi    = intervals[i % intervals.length];
+                const arpFreq = freq * Math.pow(2, semi / 12);
+                const sT      = t + i * stepDur;
+                const decay   = stepDur * 0.76;
+
+                const car    = audioCtx.createOscillator();
+                car.type     = 'sine';
+                car.frequency.value = arpFreq;
+
+                const modOsc = audioCtx.createOscillator();
+                modOsc.type  = 'sine';
+                modOsc.frequency.value = arpFreq * modRatio;
+
+                // Mod depth decays fast → sharp metallic attack, quick die-off
+                const mGain = audioCtx.createGain();
+                const depth = arpFreq * modIndex;
+                mGain.gain.setValueAtTime(depth, sT);
+                mGain.gain.exponentialRampToValueAtTime(depth * 0.012, sT + decay);
+
+                // Ping amplitude envelope
+                const aGain  = audioCtx.createGain();
+                const cycle  = Math.floor(i / intervals.length);
+                const velFade = Math.max(0.55, 1 - cycle * 0.055); // gentle fade over cycles
+                aGain.gain.setValueAtTime(0.0001, sT);
+                aGain.gain.linearRampToValueAtTime(p.vol * 3.0 * velFade, sT + 0.007);
+                aGain.gain.exponentialRampToValueAtTime(0.0001, sT + decay);
+
+                modOsc.connect(mGain); mGain.connect(car.frequency);
+                car.connect(aGain);
+                aGain.connect(dryBus); aGain.connect(reverbNode);
+
+                car.start(sT);    car.stop(sT + decay + 0.06);
+                modOsc.start(sT); modOsc.stop(sT + decay + 0.06);
+                oscs.push(car, modOsc);
+            }
+
+            // Sustained sub-octave pad — fades in slowly beneath the arpeggiation
+            const padOsc = audioCtx.createOscillator();
+            padOsc.type = 'sine';
+            padOsc.frequency.value = freq * 0.5;
+            padOsc.detune.value = 3;
+            padOsc.connect(filter); // filter→gain→bus with atk:2.5 slow fade
+            padOsc.start(t);
+            oscs.push(padOsc);
+
+        } else {
+            // ── Additive: simple oscillator stack (DRIFT, PULSE) ─────────────
+            for(const c of p.oscs) {
+                const o = audioCtx.createOscillator();
+                o.type = c.type; o.frequency.value = freq * c.fm; o.detune.value = c.dc;
+                o.connect(filter); o.start(t); oscs.push(o);
+            }
+        }
+
+        filter.connect(gain); gain.connect(dryBus); gain.connect(reverbNode);
+
+        // Textural noise layer — character varies by preset
+        const texLen = Math.floor(audioCtx.sampleRate * 2);
+        const texBuf = audioCtx.createBuffer(1, texLen, audioCtx.sampleRate);
+        const texD = texBuf.getChannelData(0);
+        for(let i = 0; i < texLen; i++) texD[i] = (Math.random()*2-1);
+        const texSrc = audioCtx.createBufferSource();
+        texSrc.buffer = texBuf; texSrc.loop = true;
+        const texFilter = audioCtx.createBiquadFilter();
+        texFilter.type = p.tt; texFilter.frequency.value = freq * p.tMult; texFilter.Q.value = p.tQ;
+        const texGain = audioCtx.createGain();
+        texGain.gain.setValueAtTime(0, t);
+        texGain.gain.linearRampToValueAtTime(p.tVol, t + 2);
+        texSrc.connect(texFilter); texFilter.connect(texGain);
+        texGain.connect(dryBus); texGain.connect(reverbNode);
+        texSrc.start(t);
+
+        // Store per-sound bounce params (captured at note-on so preset changes mid-life are safe)
+        return {oscs, gain, filter, freq, alive:true, texSrc, texGain,
+                bVolMult: p.bVolMult, bCutLo: p.bCutLo, bCutHi: p.bCutHi,
+                fReturnMult: p.fMult,  fReturnMax: p.fMax};
+    }
+
+    function bounceHit(s, intensity) {
+        if(!s||!s.alive) return;
+        const t=audioCtx.currentTime;
+
+        // Per-preset cutoff range and return frequency
+        const bCutLo = s.bCutLo ?? 3;
+        const bCutHi = s.bCutHi ?? 9;
+        const cutoff = s.freq * (bCutLo + Math.random() * (bCutHi - bCutLo));
+        const fReturn = Math.min(s.freq * (s.fReturnMult ?? 2), s.fReturnMax ?? 2000);
+        s.filter.frequency.cancelScheduledValues(t);
+        s.filter.frequency.setValueAtTime(Math.min(cutoff,8000),t);
+        s.filter.frequency.linearRampToValueAtTime(fReturn, t+1.2);
+        s.filter.Q.cancelScheduledValues(t);
+        s.filter.Q.setValueAtTime(1.5+Math.random()*3,t);
+        s.filter.Q.linearRampToValueAtTime(0.6,t+0.5);
+
+        for(const o of s.oscs) o.detune.setValueAtTime((Math.random()-0.5)*25,t);
+
+        const attack=0.005+Math.random()*0.025;
+        const vol=(0.14+0.2*intensity) * (s.bVolMult ?? 1.0);
+        s.gain.gain.cancelScheduledValues(t); s.gain.gain.setValueAtTime(s.gain.gain.value,t);
+        s.gain.gain.linearRampToValueAtTime(vol,t+attack);
+        s.gain.gain.linearRampToValueAtTime(0.04,t+1.8);
+
+        const pingFreq = s.freq * (1 + Math.floor(Math.random()*3));
+        const pingOsc = audioCtx.createOscillator();
+        const pingTypes = ['sine','triangle','sine','square'];
+        pingOsc.type = pingTypes[Math.floor(Math.random()*pingTypes.length)];
+        pingOsc.frequency.value = pingFreq;
+        pingOsc.detune.value = (Math.random()-0.5)*30;
+        const pingFilter = audioCtx.createBiquadFilter();
+        pingFilter.type = 'bandpass';
+        pingFilter.frequency.value = pingFreq * (1.5+Math.random()*2);
+        pingFilter.Q.value = 4+Math.random()*6;
+        const pingGain = audioCtx.createGain();
+        const pingVol = 0.08 + 0.15*intensity;
+        pingGain.gain.setValueAtTime(pingVol,t);
+        pingGain.gain.exponentialRampToValueAtTime(0.001,t+0.3+Math.random()*0.3);
+        pingOsc.connect(pingFilter); pingFilter.connect(pingGain);
+        pingGain.connect(dryBus); pingGain.connect(reverbNode);
+        pingOsc.start(t); pingOsc.stop(t+0.8);
+
+        if(intensity>0.08){
+            const nLen=0.06+Math.random()*0.06;
+            const bufSz=Math.floor(audioCtx.sampleRate*nLen);
+            const nb=audioCtx.createBuffer(1,bufSz,audioCtx.sampleRate);
+            const nd=nb.getChannelData(0);
+            for(let i=0;i<bufSz;i++) nd[i]=(Math.random()*2-1)*Math.pow(1-i/bufSz,1.5);
+            const ns=audioCtx.createBufferSource(); ns.buffer=nb;
+            const nf=audioCtx.createBiquadFilter();
+            nf.type='bandpass'; nf.frequency.value=s.freq*(1.5+Math.random()*3); nf.Q.value=3+Math.random()*5;
+            const ng=audioCtx.createGain();
+            ng.gain.setValueAtTime(0.05*intensity,t); ng.gain.linearRampToValueAtTime(0,t+nLen);
+            ns.connect(nf); nf.connect(ng); ng.connect(dryBus); ng.connect(reverbNode); ns.start(t);
+        }
+    }
+
+    function playBassNote(freq, intensity) {
+        if(!audioReady) return;
+        const t = audioCtx.currentTime + 0.08;
+        const bassFreq = freq * 0.25; // two octaves below
+
+        // Sub-bass sine — heavy fundamental
+        const osc1 = audioCtx.createOscillator();
+        osc1.type = 'sine'; osc1.frequency.value = bassFreq;
+        // Square wave for bite/attack character
+        const osc2 = audioCtx.createOscillator();
+        osc2.type = 'square'; osc2.frequency.value = bassFreq * 1.003;
+        // Saw for harmonics/cut
+        const osc3 = audioCtx.createOscillator();
+        osc3.type = 'sawtooth'; osc3.frequency.value = bassFreq * 2.0;
+
+        // Aggressive waveshaper for distortion/grit
+        const shaper = audioCtx.createWaveShaper();
+        const curve = new Float32Array(256);
+        for(let i=0; i<256; i++){
+            const x = (i/128) - 1;
+            curve[i] = Math.tanh(x * 4.0); // harder saturation
+        }
+        shaper.curve = curve;
+
+        // Attack-heavy filter: starts open, closes fast
+        const bassFilter = audioCtx.createBiquadFilter();
+        bassFilter.type = 'lowpass';
+        bassFilter.frequency.setValueAtTime(600, t); // open on attack
+        bassFilter.frequency.exponentialRampToValueAtTime(80, t + 0.3); // closes fast
+        bassFilter.Q.value = 2;
+
+        const bassGain = audioCtx.createGain();
+        const vol = 0.18 + 0.2 * intensity;
+        bassGain.gain.setValueAtTime(0, t);
+        bassGain.gain.linearRampToValueAtTime(vol, t + 0.003); // near-instant attack
+        bassGain.gain.linearRampToValueAtTime(vol * 0.7, t + 0.15);
+        bassGain.gain.exponentialRampToValueAtTime(0.001, t + 1.8);
+
+        // Saw oscillator gets its own lower gain
+        const sawGain = audioCtx.createGain();
+        sawGain.gain.setValueAtTime(0.5, t);
+        sawGain.gain.exponentialRampToValueAtTime(0.05, t + 0.2); // fades fast after attack
+
+        osc1.connect(shaper); osc2.connect(shaper);
+        osc3.connect(sawGain); sawGain.connect(shaper);
+        shaper.connect(bassFilter); bassFilter.connect(bassGain);
+        bassGain.connect(dryBus); bassGain.connect(reverbNode);
+        osc1.start(t); osc2.start(t); osc3.start(t);
+        osc1.stop(t + 2.5); osc2.stop(t + 2.5); osc3.stop(t + 2.5);
+    }
+
+    function releaseSound(s) {
+        if(!s||!s.alive) return; s.alive=false;
+        const t=audioCtx.currentTime;
+        s.gain.gain.cancelScheduledValues(t); s.gain.gain.setValueAtTime(s.gain.gain.value,t);
+        s.gain.gain.linearRampToValueAtTime(0,t+4);
+        if(s.texGain) {
+            s.texGain.gain.cancelScheduledValues(t);
+            s.texGain.gain.setValueAtTime(s.texGain.gain.value,t);
+            s.texGain.gain.linearRampToValueAtTime(0,t+2);
+        }
+        setTimeout(()=>{
+            for(const o of s.oscs) try{o.stop();}catch(e){}
+            if(s.texSrc) try{s.texSrc.stop();}catch(e){}
+        },5000);
+    }
+
+    // ════════════════════════════════════════
+    //  TERRAIN & WORLD
+    // ════════════════════════════════════════
+
+    // Tent-function spike: returns an upward deflection (subtract from Y) near peakX
+    function terrainSpike(wx, lseed, spacing) {
+        let pk = 0;
+        const base = Math.floor(wx / spacing) * spacing;
+        for(let k = -1; k <= 1; k++) {
+            const bx = base + k * spacing;
+            const s  = bx * 0.00137 + lseed;
+            if(sr(s) > 0.62) {                          // ~38% chance per interval
+                const peakX = bx + (sr(s+1) - 0.5) * spacing * 0.7;
+                const hw    = 55 + sr(s+2) * 110;      // half-width 55–165px → sharpness
+                const amp   = 45 + sr(s+3) * 60;       // height 45–105px
+                const dist  = Math.abs(wx - peakX);
+                if(dist < hw) pk += amp * (1 - dist / hw);
+            }
+        }
+        return pk;
+    }
+
+    function terrain(wx,layer) {
+        if(layer===-1)
+            return sceneH*0.3+Math.sin(wx*0.0003)*60+Math.sin(wx*0.0008+2)*35+Math.sin(wx*0.0015+5)*18;
+        if(layer===0)
+            return sceneH*0.42+Math.sin(wx*0.0007)*50+Math.sin(wx*0.002+3)*24+Math.sin(wx*0.0004+1)*38 - terrainSpike(wx,10,820);
+        if(layer===1)
+            return sceneH*0.56+Math.sin(wx*0.0013)*40+Math.sin(wx*0.004+1)*22+Math.sin(wx*0.009+5)*10 - terrainSpike(wx,20,760);
+        return sceneH*0.66+Math.sin(wx*0.002)*48+Math.sin(wx*0.005+2)*28+Math.sin(wx*0.013+4)*14+Math.sin(wx*0.0006)*55 - terrainSpike(wx,30,700);
+    }
+
+    // Returns the gap-corrected y of a terrain line — exactly matching what drawNeonGrid draws.
+    function surfaceAt(sx, layer) {
+        const horizonY = sceneH * 0.45;
+        const MIN_GAP  = 32;
+        const raw = terrain(sx + scrl * SCROLL_MULTS[layer], layer);
+        if(layer === 0) return Math.max(raw, horizonY + 30);
+        if(layer === 1) {
+            const y0 = Math.max(terrain(sx + scrl*SCROLL_MULTS[0], 0), horizonY + 30);
+            return Math.max(raw, y0 + MIN_GAP);
+        }
+        // layer 2
+        const y0 = Math.max(terrain(sx + scrl*SCROLL_MULTS[0], 0), horizonY + 30);
+        const y1 = Math.max(terrain(sx + scrl*SCROLL_MULTS[1], 1), y0 + MIN_GAP);
+        return Math.max(raw, y1 + MIN_GAP);
+    }
+
+    function streamSurfaceAt(sx) {
+        for(const s of dataStreams){
+            const cx=s.wx-scrl*0.15;
+            const hw=s.w*0.5;
+            if(sx>=cx-hw && sx<=cx+hw) return s.y;
+        }
+        return -999;
+    }
+
+    // ─── 3D Rotation helpers ───
+    function rotY(v, a) {
+        const c=Math.cos(a), s=Math.sin(a);
+        return [v[0]*c+v[2]*s, v[1], -v[0]*s+v[2]*c];
+    }
+    function rotX(v, a) {
+        const c=Math.cos(a), s=Math.sin(a);
+        return [v[0], v[1]*c-v[2]*s, v[1]*s+v[2]*c];
+    }
+    function project3D(v, cx, cy, scale) {
+        const depth = 3;
+        const f = scale / (v[2] + depth);
+        return [cx + v[0]*f, cy + v[1]*f];
+    }
+
+    // ─── Shape bounding box for collision ───
+    function getShapeBounds(g) {
+        const sx = g.wx - scrl;
+        if(sx < -300 || sx > W+300) return null;
+        const geom = GEOM[g.geomType];
+        if(!geom) return null;
+        const bobY = g.y + Math.sin(globalTime * 0.8 + g.bobPhase) * 12;
+        const angle = globalTime * g.rotSpeed + g.rotPhase;
+        let minX=Infinity, maxX=-Infinity, minY=Infinity, maxY=-Infinity;
+        for(const v of geom.verts) {
+            let rv = rotY(v, angle);
+            rv = rotX(rv, angle * 0.6);
+            const p = project3D(rv, sx, bobY, g.size);
+            if(p[0]<minX) minX=p[0];
+            if(p[0]>maxX) maxX=p[0];
+            if(p[1]<minY) minY=p[1];
+            if(p[1]>maxY) maxY=p[1];
+        }
+        return {left:minX, right:maxX, top:minY, bottom:maxY, cx:sx, cy:bobY};
+    }
+
+    // ─── Scene objects ───
+    function genObjects() {
+        // 3D shapes — always spawn (no gate), tight spacing guarantees ≥2 on screen
+        while(nextGeoX < scrl+W+500) {
+            // Never repeat a shape type currently on screen
+            const usedTypes = new Set(geoShapes.map(g => g.geomType));
+            const available = GEOM_TYPES.filter(t => !usedTypes.has(t));
+            const pickFrom = available.length > 0 ? available : GEOM_TYPES;
+            const typeIdx = Math.floor(Math.random() * pickFrom.length);
+            geoShapes.push({
+                wx: nextGeoX,
+                y: sceneH*0.04 + sr(nextGeoX+700)*sceneH*0.30,
+                size: 200+sr(nextGeoX+200)*260,
+                geomType: pickFrom[typeIdx],
+                color: SHAPE_COLORS[Math.floor(sr(nextGeoX+500)*SHAPE_COLORS.length)],
+                rotSpeed: 0.08+sr(nextGeoX+600)*0.28,
+                rotPhase: sr(nextGeoX+300)*Math.PI*2,
+                bobPhase: sr(nextGeoX+800)*Math.PI*2
+            });
+            nextGeoX += 550+sr(nextGeoX+500)*350; // spacing 550–900px → 1-2 on screen at once
+        }
+        while(geoShapes.length && geoShapes[0].wx < scrl-500) geoShapes.shift();
+
+        // Tiny far-background shapes — very distant field, parallax scroll at 0.18×
+        // Stored in world-space coords; screen x = wx - scrl*0.18
+        const farScrl = scrl * 0.18;
+        while(nextFarX < farScrl + W + 400) {
+            const typeIdx = Math.floor(sr(nextFarX+9000) * GEOM_TYPES.length);
+            farShapes.push({
+                wx: nextFarX,
+                y: sceneH*0.04 + sr(nextFarX+9100)*sceneH*0.32,
+                size: 16 + sr(nextFarX+9200)*36, // 16–52px — tiny, suggests vast scale
+                geomType: GEOM_TYPES[typeIdx],
+                color: SHAPE_COLORS[Math.floor(sr(nextFarX+9300)*SHAPE_COLORS.length)],
+                rotSpeed: 0.03+sr(nextFarX+9400)*0.08,
+                rotPhase: sr(nextFarX+9500)*Math.PI*2,
+                bobPhase: sr(nextFarX+9600)*Math.PI*2
+            });
+            nextFarX += 120 + sr(nextFarX+9700)*180; // dense field: 120–300px spacing
+        }
+        while(farShapes.length && farShapes[0].wx < farScrl - 400) farShapes.shift();
+
+        // Data streams (collidable)
+        while(nextStreamX < scrl+W+600) {
+            if(sr(nextStreamX*0.07+999) > 0.45) {
+                dataStreams.push({
+                    wx: nextStreamX,
+                    y: 30+sr(nextStreamX+700)*sceneH*0.25,
+                    w: 100+sr(nextStreamX+800)*200,
+                    hueOffset: sr(nextStreamX+900)*360,
+                    speed: 0.3+sr(nextStreamX+1000)*0.7
+                });
+            }
+            nextStreamX += 200+sr(nextStreamX+1100)*300;
+        }
+        while(dataStreams.length && dataStreams[0].wx < scrl-500) dataStreams.shift();
+    }
+
+    // ─── Orb physics ───
+    function pickTarget() {
+        const r=Math.random();
+        if(r<0.20) return {type:'shape'};
+        if(r<0.46) return {type:'terrain',layer:0};
+        if(r<0.73) return {type:'terrain',layer:1};
+        return {type:'terrain',layer:2};
+    }
+
+    function fireOrb(note, chordHue) {
+        if(orbs.length>=MAX_ORBS){ releaseSound(orbs.shift().sound); }
+        const minVy = Math.sqrt(2 * GRAVITY * sceneH * 0.45);
+        const maxVy = Math.sqrt(2 * GRAVITY * (sceneH - 10)); // cap: don't go above screen
+        const r=Math.random();
+        let vy;
+        if(r<0.3)      vy=-(minVy + Math.random()*60);
+        else if(r<0.7)  vy=-(minVy + 60 + Math.random()*80);
+        else             vy=-(minVy + 140 + Math.random()*100);
+        vy = Math.max(vy, -maxVy); // clamp velocity
+        const vx=(Math.random()-0.5)*220;
+
+        // Detect root note
+        const notePC = notes.indexOf(note) % 12;
+        const isRoot = (notePC === currentKey);
+        // Chord orbs use the chord's hue; solo key presses use the note's pitch hue
+        const orbHue = (chordHue !== undefined) ? ((chordHue % 360 + 360) % 360) : note.hue;
+        const orbShape = SOUND_PRESETS[currentPreset].orbShape || 'circle';
+
+        const shiftedFreq = note.freq * Math.pow(2, currentOctave);
+        orbs.push({
+            x:note.cx, y:sceneH, vx, vy,
+            note, hue:orbHue, shape:orbShape, radius:isRoot ? ORB_RADIUS * 1.35 : ORB_RADIUS,
+            freq: shiftedFreq,
+            sound:makeSound(shiftedFreq),
+            descended:false, prevVy:undefined, target:null,
+            bounces:0, life:0, alpha:1, bounceCooldown:0,
+            stuckTimer:0, bloomPulse:0,
+            trail: [],
+            debris: [], debrisClock: 0,
+            isRoot, bassPlayed: false
+        });
+    }
+
+    // Pivot button: play the bridging chord, then modulate to the new key+mode
+    function firePivot(pv) {
+        if(pv.pressed) return;
+        pv.pressed = true;
+        setTimeout(() => { pv.pressed = false; }, 400);
+        // Kick off flourish timers
+        pivotHue      = pv.hue;
+        pivotFlashT   = 1.0;
+        chordCascadeT = 0;
+        // Play the shared chord (the one that bridges both keys) with orbs
+        if(pv.pvChord) fireChord(pv.pvChord);
+        currentKey  = pv.newKey;
+        currentMode = pv.modeIdx;
+        generateChords(currentKey);
+        layout();
+        // Auto-suggest pivots from the I chord of the new key
+        if(chords.length > 0) updatePivots(chords[0]);
+    }
+
+    function fireChord(chord) {
+        if(chord.pressed) return;
+        chord.pressed=true;
+        setTimeout(()=>{chord.pressed=false;},500);
+        updatePivots(chord);  // refresh pivot suggestions based on this chord
+        const delays = [];
+        chord.noteIdx.forEach((ni,i)=>{
+            const delay=i*(55+Math.random()*65);
+            delays.push(delay);
+            // Pass chord hue + tiny per-note offset so notes share a colour family
+            setTimeout(()=>{ if(ni<notes.length) pressNote(notes[ni], chord.hue + i*10); },delay);
+        });
+        // Fire root note again at the end for resolution
+        const rootNi = chord.noteIdx[0];
+        const lastDelay = (delays[delays.length-1] || 0) + 160;
+        setTimeout(()=>{ if(rootNi<notes.length) pressNote(notes[rootNi], chord.hue); }, lastDelay);
+    }
+
+    // ─── Update ───
+    function update(dt) {
+        scrl+=SCROLL_SPEED*dt;
+        globalTime+=dt;
+        genObjects();
+
+        // ── Drum blooms: fire each when its scheduled time is reached ────────
+        if(audioCtx) {
+            const now = audioCtx.currentTime;
+            const pairs = [
+                [kickTimes,  ()=>{ kickBloom  = 1.0; }],
+                [chhTimes,   ()=>{ chhBloom   = 1.0; }],
+                [ohhTimes,   ()=>{ ohhBloom   = 1.0; }],
+                [snareTimes, ()=>{ snareBloom = 1.0; }],
+                [rimTimes,   ()=>{ rimBloom   = 1.0; }],
+            ];
+            for(const [arr, fn] of pairs) {
+                while(arr.length && arr[0] <= now) { arr.shift(); fn(); }
+            }
+        }
+        // Decay — rates tuned to each sound's character
+        kickBloom  = Math.max(0, kickBloom  - dt * 3.2); // punchy, ~0.35s
+        chhBloom   = Math.max(0, chhBloom   - dt * 5.5); // crisp tick, ~0.2s
+        ohhBloom   = Math.max(0, ohhBloom   - dt * 2.2); // washy, ~0.5s
+        snareBloom = Math.max(0, snareBloom - dt * 3.8); // snappy, ~0.28s
+        rimBloom   = Math.max(0, rimBloom   - dt * 6.0); // sharp click, ~0.18s
+        if(bassFlashT > 0) bassFlashT = Math.max(0, bassFlashT - dt * 2.4); // ~0.42s
+        // Pivot flourish timers
+        if(pivotFlashT   > 0)  pivotFlashT   = Math.max(0, pivotFlashT - dt * 1.1);   // ~0.9s fade
+        if(chordCascadeT >= 0) chordCascadeT = Math.min(1, chordCascadeT + dt * 2.2); // ~0.45s sweep
+
+        for(let i=orbs.length-1;i>=0;i--){
+            const o=orbs[i];
+            o.life+=dt;
+            o.vy+=GRAVITY*dt;
+            o.y+=o.vy*dt;
+            o.x+=o.vx*dt;
+            if(o.bounceCooldown>0) o.bounceCooldown-=dt;
+
+            // Hard clamp: bounce off top of screen
+            if(o.y < 0) { o.y = 0; o.vy = Math.abs(o.vy); }
+
+            o.trail.push({x:o.x, y:o.y});
+            if(o.trail.length>TRAIL_LEN) o.trail.shift();
+
+            // ── Shed debris — particles spawned once and left in world space ──
+            o.debrisClock += dt;
+            while(o.debrisClock >= 0.035) {
+                o.debrisClock -= 0.035;
+                const speed = Math.sqrt(o.vx*o.vx + o.vy*o.vy) || 1;
+                const perpX = -o.vy / speed, perpY = o.vx / speed;
+                for(let pi = 0; pi < 2; pi++) {
+                    const frac    = Math.random() * 2 - 1;
+                    const spread  = o.radius * (0.5 + Math.random() * 1.6);
+                    const isSpark = Math.random() < 0.28;
+                    o.debris.push({
+                        x: o.x + perpX * frac * spread,
+                        y: o.y + perpY * frac * spread,
+                        dvx: (Math.random() - 0.5) * 12,   // gentle drift in world space
+                        dvy: (Math.random() - 0.5) * 12,
+                        hue: (o.hue + Math.random() * 80) % 360,
+                        sz:  isSpark ? 0.6 + Math.random() * 0.9
+                                     : 1.5 + Math.random() * 3.0,
+                        rot: Math.random() * Math.PI * 2,
+                        shapeIdx: isSpark ? 8 : Math.floor(Math.random() * 9),
+                        alpha: 0.55 + Math.random() * 0.35,
+                        fadeRate: isSpark ? 0.9 + Math.random() * 0.6
+                                          : 0.45 + Math.random() * 0.35
+                    });
+                }
+                if(o.debris.length > 300) o.debris.splice(0, o.debris.length - 300);
+            }
+            // Age and drift existing debris
+            for(let di = o.debris.length - 1; di >= 0; di--) {
+                const d = o.debris[di];
+                d.x    += d.dvx * dt;
+                d.y    += d.dvy * dt;
+                d.alpha -= d.fadeRate * dt;
+                if(d.alpha <= 0) o.debris.splice(di, 1);
+            }
+            if(o.bloomPulse>0) o.bloomPulse=Math.max(0, o.bloomPulse - dt*4);
+
+            if(o.x<20){o.x=20;o.vx=Math.abs(o.vx)*0.7;}
+            if(o.x>W-20){o.x=W-20;o.vx=-Math.abs(o.vx)*0.7;}
+
+            const wasUp=o.prevVy!==undefined&&o.prevVy<=0;
+            const nowDown=o.vy>0;
+            if(wasUp&&nowDown){
+                if(!o.descended) o.descended=true;
+                o.target=pickTarget();
+                o.stuckTimer=0;
+            }
+            o.prevVy=o.vy;
+
+            // Stuck detection — mark done but keep velocity so orb drifts away
+            if(o.bounces > 0 && o.bounces < MAX_BOUNCES && Math.abs(o.vy) < 80) {
+                o.stuckTimer += dt;
+                if(o.stuckTimer > 0.5) {
+                    o.bounces = MAX_BOUNCES; // start fading; physics continues
+                }
+            } else if(o.vy < -50) {
+                o.stuckTimer = 0;
+            }
+
+            if(o.descended&&o.target&&o.vy>0&&o.bounceCooldown<=0){
+                let surfY;
+                let hit = false;
+
+                if(o.target.type==='shape') {
+                    // Bounce only off the top edge of a 3D shape's bounding box.
+                    for(const g of geoShapes) {
+                        const bounds = getShapeBounds(g);
+                        if(!bounds) continue;
+                        if(o.x >= bounds.left - o.radius && o.x <= bounds.right + o.radius &&
+                           o.y >= bounds.top - o.radius && o.y <= bounds.top + o.radius * 4) {
+                            surfY = bounds.top;
+                            hit = true;
+                            break;
+                        }
+                    }
+                    // Fading orbs: if no shape in range fall back to the nearest terrain line
+                    // so they never escape the visible scene (but still only land on a neon line)
+                    if(!hit && o.bounces >= MAX_BOUNCES) {
+                        surfY = surfaceAt(o.x, 2);
+                        hit   = (o.y >= surfY - o.radius);
+                    }
+                } else {
+                    surfY = surfaceAt(o.x, o.target.layer);
+                    hit   = (o.y >= surfY - o.radius);
+                }
+
+                if(hit && surfY !== undefined){
+                    o.y=surfY-o.radius-2;
+                    o.vy=-Math.abs(o.vy)*BOUNCE_DAMP;
+                    o.vx*=0.92;
+                    o.bounces++;
+                    o.bounceCooldown=0.12;
+                    const inten=Math.max(0,1-o.bounces/MAX_BOUNCES);
+                    bounceHit(o.sound,inten);
+                    o.bloomPulse=0.28+0.18*inten;
+
+                    // Bass note on root note first collision
+                    if(o.isRoot && !o.bassPlayed) {
+                        o.bassPlayed = true;
+                        playBassNote(o.freq, inten);
+                        bassFlashT   = 1.0;
+                        bassFlashX   = o.x;
+                        bassFlashY   = o.y;
+                        bassFlashHue = o.hue;
+                    }
+
+                    if(Math.abs(o.vy)<MIN_BOUNCE_VEL){
+                        // Too little energy left — start fading but let physics carry it
+                        o.bounces=MAX_BOUNCES;
+                    }
+                }
+            }
+
+            if(o.bounces>=MAX_BOUNCES) o.alpha-=dt*0.28; // slow graceful fade, continues trajectory
+            if(o.x<-120||o.x>W+120||o.alpha<=0||o.life>40||o.y>sceneH+120){
+                releaseSound(o.sound); orbs.splice(i,1);
+            }
+        }
+    }
+
+    // ════════════════════════════════════════
+    //  DRAWING — SYNTHWAVE PALETTE
+    // ════════════════════════════════════════
+
+    function drawBackground() {
+        const horizonY = sceneH * 0.45;
+
+        // Solid dark sky base — identical to CSS bg, zero seam at any edge
+        ctx.fillStyle = '#0c0614';
+        ctx.fillRect(0, 0, W, sceneH);
+
+        // Warm sunset glow: starts fully transparent so it has NO visible upper boundary.
+        // Only the lower ~55% of the sky receives any warm tint at all.
+        const warmStartY = horizonY * 0.45;
+        const warmSkyG = ctx.createLinearGradient(0, warmStartY, 0, horizonY);
+        warmSkyG.addColorStop(0,    'rgba(0,0,0,0)');         // invisible — no hard line
+        warmSkyG.addColorStop(0.28, 'rgba(55,8,3,0.12)');
+        warmSkyG.addColorStop(0.55, 'rgba(115,20,0,0.30)');
+        warmSkyG.addColorStop(0.80, 'rgba(185,42,0,0.54)');
+        warmSkyG.addColorStop(1.0,  'rgba(210,52,0,0.74)');   // peak at horizon
+        ctx.fillStyle = warmSkyG;
+        ctx.fillRect(0, warmStartY, W, horizonY - warmStartY);
+
+        // Wide horizon glow — warm ambient light
+        const glowG = ctx.createRadialGradient(W/2, horizonY, 0, W/2, horizonY, W*0.7);
+        glowG.addColorStop(0, 'rgba(255,69,0,0.2)');
+        glowG.addColorStop(0.2, 'rgba(204,51,0,0.12)');
+        glowG.addColorStop(0.5, 'rgba(139,0,32,0.06)');
+        glowG.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.fillStyle = glowG;
+        ctx.fillRect(0, 0, W, sceneH); // full scene — gradient fades to 0 naturally, no hard edge
+
+        // Sun — upper half only (clip below horizon)
+        const sunX = W/2, sunY = horizonY - 10;
+        const snareEase = snareBloom * snareBloom * (3 - 2 * snareBloom);
+        const sunR = Math.min(75, sceneH * 0.12) * (1 + snareEase * 0.22);
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(0, 0, W, horizonY); // clip to above horizon
+        ctx.clip();
+
+        const sunG = ctx.createRadialGradient(sunX, sunY, 0, sunX, sunY, sunR);
+        sunG.addColorStop(0, '#ffb300');
+        sunG.addColorStop(0.3, '#ff7b00');
+        sunG.addColorStop(0.6, '#ff4500');
+        sunG.addColorStop(0.85, '#dc143c');
+        sunG.addColorStop(1, 'rgba(220,20,60,0)');
+        ctx.fillStyle = sunG;
+        ctx.beginPath(); ctx.arc(sunX, sunY, sunR, 0, Math.PI*2); ctx.fill();
+
+        // Sliced sun lines — kept well above the horizon clip edge (no line artefact)
+        ctx.fillStyle = 'rgba(5,2,8,0.75)';
+        const sliceCount = 5;
+        const sliceTopY = sunY - sunR * 0.44;   // start ~44% above centre
+        const sliceSpan = sunR * 0.50;           // span 50% of radius downward (~15 px clear of horizon)
+        for(let s=0; s<sliceCount; s++) {
+            const sy = sliceTopY + s * (sliceSpan / sliceCount);
+            const sh = 1.5 + s * 1.0;
+            const dy = sy - sunY;
+            if(Math.abs(dy) > sunR) continue;
+            const halfW = Math.sqrt(Math.max(0, sunR*sunR - dy*dy));
+            ctx.fillRect(sunX - halfW, sy, halfW*2, sh);
+        }
+        ctx.restore(); // remove clip
+
+        // Snare bloom — sun corona halo (drawn outside clip so it can extend below horizon)
+        if(snareBloom > 0) {
+            const b = snareEase;
+            const haloR = sunR * 2.0;
+            const haloG = ctx.createRadialGradient(sunX, sunY, sunR * 0.8, sunX, sunY, haloR);
+            haloG.addColorStop(0,   `rgba(255,200,80,${b * 0.5})`);
+            haloG.addColorStop(0.5, `rgba(255,80,20,${b * 0.22})`);
+            haloG.addColorStop(1,   'rgba(220,20,80,0)');
+            ctx.save();
+            ctx.globalCompositeOperation = 'screen';
+            ctx.fillStyle = haloG;
+            ctx.beginPath(); ctx.arc(sunX, sunY, haloR, 0, Math.PI * 2); ctx.fill();
+            ctx.restore();
+        }
+
+        // Ground gradient — horizon down to scene bottom
+        const groundG = ctx.createLinearGradient(0, horizonY, 0, sceneH);
+        groundG.addColorStop(0,    'rgba(42,8,8,0)');   // transparent — warm sky bleeds through, no hard seam
+        groundG.addColorStop(0.04, '#2a0808');
+        groundG.addColorStop(0.15, '#1a0610');
+        groundG.addColorStop(0.4, '#100414');
+        groundG.addColorStop(0.7, '#0a0312');
+        groundG.addColorStop(1,   '#050208');
+        ctx.fillStyle = groundG;
+        ctx.fillRect(0, horizonY, W, sceneH - horizonY);
+
+        // Background grid lines — below horizon only
+        ctx.save(); ctx.globalAlpha=0.04;
+        ctx.strokeStyle=SW.gridRed; ctx.lineWidth=1;
+        for(let y=horizonY;y<sceneH;y+=40){
+            ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(W,y); ctx.stroke();
+        }
+        ctx.restore();
+    }
+
+    function drawMountains() {
+        const horizonY = sceneH * 0.45;
+        // Sun window: narrowed to bring mountains closer to the sun
+        const clearL = W * 0.37, clearR = W * 0.63;
+
+        // edgeFactor: 1 at screen edges, 0 inside the clear window, smooth ramp between
+        function edgeFactor(x) {
+            if(x < clearL) return Math.pow(1 - x / clearL, 0.6);
+            if(x > clearR) return Math.pow((x - clearR) / (W - clearR), 0.6);
+            return 0;
+        }
+
+        // Draw one mountain layer as an organic ridgeline with varying-width segments.
+        // centerMin > 0 allows a faint presence even in the clear sun window (distant look).
+        function drawLayer(baseY, color, maxH, seedOff, centerMin = 0) {
+            const pts = [];
+            let x = -80;
+            let s = seedOff;
+            while(x <= W + 100) {
+                const ef = Math.max(centerMin, edgeFactor(x));
+                const segW = 20 + 68 * sr(s++);
+                const isDip = sr(s++) < 0.28;
+                const h = ef * maxH * (isDip
+                    ? 0.03 + 0.18 * sr(s++)
+                    : 0.28 + 0.72 * sr(s++));
+                pts.push({ x, y: baseY - h });
+                x += segW;
+            }
+            ctx.save();
+            ctx.fillStyle = color;
+            ctx.beginPath();
+            // Walk baseline to the first point's x before rising — avoids a visible
+            // diagonal at the screen edge where pts[0].x is off-screen to the left.
+            ctx.moveTo(-2, baseY + 2);
+            if(pts.length > 0) {
+                ctx.lineTo(pts[0].x, baseY + 2);
+                for(const pt of pts) ctx.lineTo(pt.x, pt.y);
+                ctx.lineTo(pts[pts.length - 1].x, baseY + 2);
+            }
+            ctx.lineTo(W + 2, baseY + 2);
+            ctx.closePath();
+            ctx.fill();
+            ctx.restore();
+        }
+
+        // Very distant layer — tiny, spans the whole width including the sun window
+        drawLayer(horizonY,     '#0e000c',  28, 23, 0.28);
+        // O-HH bloom: distant mountains catch light
+        if(ohhBloom > 0) {
+            const b = ohhBloom * ohhBloom * (3 - 2 * ohhBloom);
+            ctx.save(); ctx.globalCompositeOperation = 'screen'; ctx.globalAlpha = b * 0.45;
+            drawLayer(horizonY, '#4a0850', 28, 23, 0.28);
+            ctx.restore();
+        }
+        // Main framing layers
+        drawLayer(horizonY,     '#120010', 145,  3);
+        drawLayer(horizonY + 5, '#1e0016', 105, 11);
+        // C-HH bloom: front mountains catch light
+        if(chhBloom > 0) {
+            const b = chhBloom * chhBloom * (3 - 2 * chhBloom);
+            ctx.save(); ctx.globalCompositeOperation = 'screen'; ctx.globalAlpha = b * 0.40;
+            drawLayer(horizonY,     '#5a1060', 145,  3);
+            drawLayer(horizonY + 5, '#6a1070', 105, 11);
+            ctx.restore();
+        }
+    }
+
+    function drawStarfield() {
+        if(!starsInited) return;
+        ctx.save();
+        const starColors = [SW.amber, SW.hotPink, SW.crimson];
+        for(const s of stars) {
+            s.x += s.drift;
+            if(s.x < 0) s.x = W;
+            if(s.x > W) s.x = 0;
+            const twinkle = 0.35 + 0.65 * Math.abs(Math.sin(globalTime * s.twinkleSpeed + s.twinklePhase));
+            const rimEase = rimBloom * rimBloom * (3 - 2 * rimBloom);
+            const starAlpha = Math.min(1, twinkle * 0.9 + rimEase * 0.7);
+            const starSize  = s.size * (1 + rimEase * 1.2);
+            ctx.globalAlpha = starAlpha;
+            ctx.fillStyle = starColors[Math.floor(s.twinklePhase * 10) % starColors.length];
+            ctx.fillRect(s.x - starSize*0.5, s.y - starSize*0.5, starSize, starSize);
+        }
+        ctx.restore();
+    }
+
+    function drawDataStreams() {
+        for(const s of dataStreams){
+            const cx=s.wx-scrl*0.15;
+            if(cx<-s.w||cx>W+s.w) continue;
+            const hw=s.w*0.5;
+            // Alternate between orange and hot pink
+            const useOrange = (Math.floor(s.hueOffset / 180) % 2 === 0);
+            const color = useOrange ? SW.orange : SW.hotPink;
+
+            ctx.save();
+            // Glow pass
+            ctx.strokeStyle = useOrange ? 'rgba(255,69,0,0.15)' : 'rgba(255,26,94,0.15)';
+            ctx.lineWidth=6; ctx.lineCap='round';
+            ctx.beginPath(); ctx.moveTo(cx-hw,s.y); ctx.lineTo(cx+hw,s.y); ctx.stroke();
+
+            // Core pass
+            ctx.strokeStyle = color;
+            ctx.globalAlpha = 0.7;
+            ctx.lineWidth=1.5;
+            ctx.beginPath(); ctx.moveTo(cx-hw,s.y); ctx.lineTo(cx+hw,s.y); ctx.stroke();
+
+            // Dashed data packets
+            ctx.lineWidth=2; ctx.globalAlpha=0.65;
+            const packetPhase=(scrl*s.speed)%40;
+            ctx.setLineDash([8,12]);
+            ctx.lineDashOffset=-packetPhase;
+            ctx.strokeStyle = useOrange ? SW.crimson : SW.amber;
+            ctx.beginPath(); ctx.moveTo(cx-hw,s.y); ctx.lineTo(cx+hw,s.y); ctx.stroke();
+            ctx.setLineDash([]);
+
+            ctx.restore();
+        }
+    }
+
+    function drawNeonGrid(layer, baseHue, sm, lineW) {
+        const horizonY = sceneH * 0.45;
+        const vpX = W / 2;          // vanishing point = sunset centre
+        const vpY = horizonY;
+        const off = scrl * sm;
+        const MIN_GAP = 32;         // minimum visual gap between adjacent terrain lines (px)
+
+        // Visual y for this layer, gap-enforced so layers can't bunch.
+        // Layer 0 min is horizonY+30 (not +2) — keeps depth lines from fan-out ×165.
+        function dy(x) {
+            const raw = terrain(x + off, layer);
+            if(layer === 0) return Math.max(raw, horizonY + 30);
+            if(layer === 1) {
+                const y0 = Math.max(terrain(x + scrl*SCROLL_MULTS[0], 0), horizonY + 30);
+                return Math.max(raw, y0 + MIN_GAP);
+            }
+            if(layer === 2) {
+                const y0 = Math.max(terrain(x + scrl*SCROLL_MULTS[0], 0), horizonY + 30);
+                const y1 = Math.max(terrain(x + scrl*SCROLL_MULTS[1], 1), y0 + MIN_GAP);
+                return Math.max(raw, y1 + MIN_GAP);
+            }
+            return raw;
+        }
+
+        const hueShift = Math.sin(globalTime * (0.5 + layer*0.3)) * 15;
+        const hue      = baseHue + hueShift;
+        const pulse    = 1 + 0.3 * Math.sin(globalTime * (1.5 + layer*0.7));
+        const glowW    = lineW * 3 * pulse;
+
+        ctx.save();
+        ctx.lineCap = 'round';
+
+        // ── Terrain line — drawn BEFORE the occlusion clip ────────────────────
+        // Must be outside the clip so it is never accidentally hidden when
+        // raw terrain values from adjacent layers happen to be close together.
+        ctx.strokeStyle = hsl(hue, 80, 45, 0.2);
+        ctx.lineWidth   = glowW;
+        ctx.beginPath();
+        for(let x = -2; x <= W+2; x += 5) {
+            const y = dy(x);
+            x === -2 ? ctx.moveTo(x,y) : ctx.lineTo(x,y);
+        }
+        ctx.stroke();
+
+        ctx.strokeStyle = hsl(hue, 85, 58);
+        ctx.lineWidth   = lineW;
+        ctx.beginPath();
+        for(let x = -2; x <= W+2; x += 5) {
+            const y = dy(x);
+            x === -2 ? ctx.moveTo(x,y) : ctx.lineTo(x,y);
+        }
+        ctx.stroke();
+
+        // ── Occlusion clip — applied only to the grid, not the terrain line ───
+        // Background grid is hidden wherever the next-closer terrain sits in front.
+        if(layer < 2) {
+            const occOff = scrl * SCROLL_MULTS[layer + 1];
+            ctx.beginPath();
+            ctx.moveTo(-2, 0);
+            ctx.lineTo(W+2, 0);
+            for(let x = W+2; x >= -2; x -= 5) {
+                // Use gap-corrected y so clip boundary matches what is actually drawn
+                const occRaw = terrain(x + occOff, layer + 1);
+                const occY   = layer === 0
+                    ? Math.max(occRaw, dy(x) + MIN_GAP)   // layer 1 boundary relative to layer 0
+                    : Math.max(occRaw, dy(x) + MIN_GAP);  // layer 2 boundary relative to layer 1
+                ctx.lineTo(x, occY);
+            }
+            ctx.closePath();
+            ctx.clip();
+        }
+
+        // ── 3-D perspective grid ───────────────────────────────────────────────
+        // Perspective density: back=fine (tiny far tiles), front=coarse (big near tiles)
+        const gridSpacing = layer===0 ? 18 : layer===1 ? 52 : 115;
+
+        // DEPTH LINES — radiate from the vanishing point (sunset) outward/downward.
+        // Each line passes through a terrain sample and extends to the scene bottom.
+        ctx.strokeStyle = hsl(hue, 70, 42, 0.32);
+        ctx.lineWidth   = lineW * 0.4;
+        ctx.beginPath();
+        for(let x = -gridSpacing; x <= W + gridSpacing; x += gridSpacing) {
+            const wx  = x + off;
+            const gx  = Math.round(wx / gridSpacing) * gridSpacing;
+            const sx  = gx - off;                  // screen x of this depth line
+            if(sx < -30 || sx > W+30) continue;
+            const ty  = dy(sx);                    // terrain y (gap-corrected)
+            const ddY = ty - vpY;                  // > 0: terrain is below the horizon
+            if(ddY <= 0) continue;
+            // Extend from terrain point to scene bottom, converging toward VP
+            const tMax  = (sceneH - vpY) / ddY;
+            const xEnd  = vpX + tMax * (sx - vpX);
+            ctx.moveTo(sx, ty);
+            ctx.lineTo(xEnd, sceneH);
+        }
+        ctx.stroke();
+
+        // HORIZONTAL LATITUDE LINES — straight across screen, perspectively spaced
+        // (more compressed near the terrain, spreading toward the viewer).
+        // For each layer, distribute lines only within the VISIBLE strip
+        // (from this layer's terrain to the next-closer layer's terrain).
+        // This ensures all numH lines are packed into the strip that's actually shown.
+        const numH = layer===0 ? 9 : layer===1 ? 5 : 2;
+        ctx.strokeStyle = hsl(hue, 55, 36, 0.18);
+        ctx.lineWidth   = lineW * 0.22;
+        ctx.beginPath();
+        // Sample average terrain y for this layer (top of visible strip)
+        let sum = 0, cnt = 0;
+        for(let x = 0; x <= W; x += 40) { sum += dy(x); cnt++; }
+        const avgY = cnt ? sum / cnt : sceneH * 0.5;
+        // Sample average occlusion y = bottom of visible strip for this layer.
+        // For layer 2 (frontmost) there's no occlusion, so bottom = sceneH.
+        let botSum = 0, botCnt = 0;
+        for(let x = 0; x <= W; x += 40) {
+            if(layer < 2) {
+                const occRaw = terrain(x + scrl * SCROLL_MULTS[layer + 1], layer + 1);
+                botSum += Math.max(occRaw, dy(x) + MIN_GAP);
+            } else {
+                botSum += sceneH;
+            }
+            botCnt++;
+        }
+        const bottomY = botCnt ? botSum / botCnt : sceneH;
+        for(let i = 1; i <= numH; i++) {
+            // Power < 1 compresses lines toward the terrain (far end = horizon side)
+            const frac = Math.pow(i / (numH + 1), 0.65);
+            const yH   = avgY + (bottomY - avgY) * frac;
+            ctx.moveTo(0, yH);
+            ctx.lineTo(W, yH);
+        }
+        ctx.stroke();
+
+        ctx.restore();
+    }
+
+    function drawGeometricShapes() {
+        // Clip everything to above the horizon — shapes are distant/behind mountains
+        const horizonY = sceneH * 0.45;
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(0, 0, W, horizonY);
+        ctx.clip();
+
+        // kickBloom drives a visual swell — eased so 0→1 feels like a snap and 1→0 glides
+        const bloomEase = kickBloom * kickBloom * (3 - 2 * kickBloom); // smoothstep
+
+        // ── Far-background shapes — tiny, faint, parallax at 0.18× ──────────
+        const farScrl = scrl * 0.18;
+        for(const g of farShapes) {
+            const sx = g.wx - farScrl;
+            if(sx < -200 || sx > W+200) continue;
+            const geom = GEOM[g.geomType];
+            if(!geom) continue;
+            const bobY = g.y + Math.sin(globalTime * 0.3 + g.bobPhase) * 4;
+            const angle = globalTime * g.rotSpeed + g.rotPhase;
+            const farBloomScale = 1 + bloomEase * 0.18; // subtle size swell on far shapes
+            const projected = geom.verts.map(v => {
+                let rv = rotY(v, angle);
+                rv = rotX(rv, angle * 0.5);
+                return project3D(rv, sx, bobY, g.size * farBloomScale);
+            });
+            // Faint normally, brightens on kick
+            ctx.save();
+            ctx.filter = 'blur(0.8px)';
+            ctx.globalAlpha = (0.28 + sr(g.wx+9800) * 0.18) * (1 + bloomEase * 1.2); // 0.28–0.46, blooms brighter
+            ctx.strokeStyle = g.color;
+            ctx.lineWidth = 0.9;
+            ctx.beginPath();
+            for(const [a,b] of geom.edges) {
+                const pa = projected[a], pb = projected[b];
+                ctx.moveTo(pa[0],pa[1]); ctx.lineTo(pb[0],pb[1]);
+            }
+            ctx.stroke();
+            ctx.filter = 'none';
+            ctx.restore();
+        }
+
+        // ── Main large shapes ─────────────────────────────────────────────────
+        for(const g of geoShapes){
+            const sx=g.wx-scrl;
+            if(sx<-400||sx>W+400) continue;
+
+            const geom = GEOM[g.geomType];
+            if(!geom) continue;
+
+            const bobY = g.y + Math.sin(globalTime * 0.6 + g.bobPhase) * 22;
+            const angle = globalTime * g.rotSpeed + g.rotPhase;
+            // Base glow pulse + kick bloom layered on top
+            const glowPulse = (1 + 0.35 * Math.sin(globalTime * 1.8 + g.rotPhase))
+                            * (1 + bloomEase * 2.8); // kick triples the glow
+
+            // Size blooms outward on kick (each shape blooms slightly differently)
+            const bloomScale = 1 + bloomEase * (0.12 + sr(g.wx + 333) * 0.10);
+            const projected = geom.verts.map(v => {
+                let rv = rotY(v, angle);
+                rv = rotX(rv, angle * 0.6);
+                return project3D(rv, sx, bobY, g.size * bloomScale);
+            });
+
+            ctx.save();
+
+            const gc = g.color;
+
+            // Wide blurry halo pass — kick dramatically widens the halo
+            ctx.filter = `blur(${6 + bloomEase * 12}px)`;
+            ctx.globalAlpha = (0.10 + bloomEase * 0.22) * glowPulse;
+            ctx.strokeStyle = gc;
+            ctx.lineWidth = 12 + bloomEase * 10;
+            ctx.beginPath();
+            for(const [a,b] of geom.edges){
+                const pa = projected[a], pb = projected[b];
+                ctx.moveTo(pa[0],pa[1]); ctx.lineTo(pb[0],pb[1]);
+            }
+            ctx.stroke();
+
+            // Medium blur glow pass
+            ctx.filter = `blur(${2.5 + bloomEase * 4}px)`;
+            ctx.globalAlpha = (0.18 + bloomEase * 0.30) * glowPulse;
+            ctx.lineWidth = 5 + bloomEase * 4;
+            ctx.beginPath();
+            for(const [a,b] of geom.edges){
+                const pa = projected[a], pb = projected[b];
+                ctx.moveTo(pa[0],pa[1]); ctx.lineTo(pb[0],pb[1]);
+            }
+            ctx.stroke();
+
+            // Crisp core pass — slightly brighter on kick
+            ctx.filter = 'none';
+            ctx.globalAlpha = Math.min(1, 0.72 + bloomEase * 0.28);
+            ctx.lineWidth = 1.2 + bloomEase * 0.8;
+            ctx.beginPath();
+            for(const [a,b] of geom.edges){
+                const pa = projected[a], pb = projected[b];
+                ctx.moveTo(pa[0],pa[1]); ctx.lineTo(pb[0],pb[1]);
+            }
+            ctx.stroke();
+
+            // Vertex dots — subtle bright points at each corner
+            ctx.filter = 'none';
+            ctx.globalAlpha = 0.6;
+            ctx.fillStyle = gc;
+            for(const p of projected) {
+                ctx.beginPath(); ctx.arc(p[0], p[1], 2, 0, Math.PI*2); ctx.fill();
+            }
+
+            ctx.restore();
+        }
+
+        ctx.restore(); // end horizon clip
+    }
+
+    function drawScanLines() {
+        if(!scanlineCanvas) return;
+        ctx.save();
+        ctx.globalAlpha = 0.5;
+        ctx.drawImage(scanlineCanvas, 0, 0, 1, scanlineCanvas.height, 0, 0, W, sceneH);
+        ctx.restore();
+    }
+
+    // Draw a trail shape at (cx,cy) — filled glow + crisp stroke outline
+    function drawTrailShape(cx, cy, sz, rot, shapeIdx, strokeColor, alpha) {
+        ctx.save();
+        ctx.lineJoin = 'round';
+        ctx.translate(cx, cy);
+        ctx.rotate(rot);
+        ctx.beginPath();
+        const si = shapeIdx % 9;
+        switch(si) {
+            case 0: // square
+                ctx.rect(-sz, -sz, sz*2, sz*2); break;
+            case 1: // equilateral triangle
+                ctx.moveTo(0,-sz*1.3); ctx.lineTo(sz,sz*0.85); ctx.lineTo(-sz,sz*0.85); ctx.closePath(); break;
+            case 2: // octagon
+                for(let k=0;k<8;k++){const a=k/8*Math.PI*2;k===0?ctx.moveTo(Math.cos(a)*sz,Math.sin(a)*sz):ctx.lineTo(Math.cos(a)*sz,Math.sin(a)*sz);} ctx.closePath(); break;
+            case 3: // tall diamond
+                ctx.moveTo(0,-sz*1.5); ctx.lineTo(sz*0.75,0); ctx.lineTo(0,sz*1.5); ctx.lineTo(-sz*0.75,0); ctx.closePath(); break;
+            case 4: // pentagon
+                for(let k=0;k<5;k++){const a=k/5*Math.PI*2-Math.PI/2;k===0?ctx.moveTo(Math.cos(a)*sz,Math.sin(a)*sz):ctx.lineTo(Math.cos(a)*sz,Math.sin(a)*sz);} ctx.closePath(); break;
+            case 5: // hexagon
+                for(let k=0;k<6;k++){const a=k/6*Math.PI*2;k===0?ctx.moveTo(Math.cos(a)*sz,Math.sin(a)*sz):ctx.lineTo(Math.cos(a)*sz,Math.sin(a)*sz);} ctx.closePath(); break;
+            case 6: // 5-pointed star
+                for(let k=0;k<10;k++){const a=k/10*Math.PI*2-Math.PI/2;const r=k%2===0?sz:sz*0.42;k===0?ctx.moveTo(Math.cos(a)*r,Math.sin(a)*r):ctx.lineTo(Math.cos(a)*r,Math.sin(a)*r);} ctx.closePath(); break;
+            case 7: // cross — lines only, no fill
+                ctx.moveTo(0,-sz*1.2); ctx.lineTo(0,sz*1.2);
+                ctx.moveTo(-sz*1.2,0); ctx.lineTo(sz*1.2,0); break;
+            case 8: // circle
+                ctx.arc(0, 0, sz, 0, Math.PI*2); break;
+        }
+        // Soft fill pass (not on cross which can't be filled meaningfully)
+        if(si !== 7) {
+            ctx.globalAlpha = alpha * 0.18;
+            ctx.fillStyle = strokeColor;
+            ctx.fill();
+        }
+        // Crisp stroke outline
+        ctx.globalAlpha = alpha;
+        ctx.strokeStyle = strokeColor;
+        ctx.lineWidth = 1.0 + sz * 0.07;
+        ctx.stroke();
+        ctx.restore();
+    }
+
+    // Draw the outline path for the current orb shape (used for both glow + crisp passes)
+    // All shapes rotate to follow their travel direction via ctx transform.
+    function pathOrbShape(cx, cy, cr, shape, angle) {
+        ctx.save();
+        ctx.translate(cx, cy);
+        ctx.rotate(angle || 0);
+        ctx.beginPath();
+        switch(shape) {
+            case 'triangle': {
+                // Tip points along +x (travel direction), wings sweep back
+                const h = cr * 1.2;
+                ctx.moveTo(h, 0);
+                ctx.lineTo(-h * 0.72, -h * 0.88);
+                ctx.lineTo(-h * 0.72,  h * 0.88);
+                ctx.closePath();
+                break;
+            }
+            case 'octagon':
+                for(let k = 0; k < 8; k++) {
+                    const a = k / 8 * Math.PI * 2 + Math.PI / 8;
+                    k === 0 ? ctx.moveTo(Math.cos(a)*cr, Math.sin(a)*cr)
+                            : ctx.lineTo(Math.cos(a)*cr, Math.sin(a)*cr);
+                }
+                ctx.closePath();
+                break;
+            case 'square': {
+                // Diamond orientation — corners point along/against travel
+                const s = cr * 0.92;
+                ctx.moveTo(s, 0); ctx.lineTo(0, s);
+                ctx.lineTo(-s, 0); ctx.lineTo(0, -s);
+                ctx.closePath();
+                break;
+            }
+            case 'chevron': {
+                // Tip points along +x (travel direction)
+                ctx.moveTo(cr*1.15, 0);
+                ctx.lineTo(-cr*0.55, -cr*0.88);
+                ctx.lineTo(-cr*0.1,  0);
+                ctx.lineTo(-cr*0.55,  cr*0.88);
+                ctx.closePath();
+                break;
+            }
+            default: // circle — rotation doesn't change appearance
+                ctx.arc(0, 0, cr, 0, Math.PI * 2);
+        }
+        ctx.restore();
+    }
+
+    // Orbs — clean circles with elaborate comet tails
+
+
+    // ─── Drum sequencer UI ──────────────────────────────────────────────────
+
+    function calcDrumBounds() {
+        const ky   = sceneH;              // sequencer starts flush at scene bottom
+        const areaH= H - ky - 6;
+        const gridX= DRUM_BPM_W + DRUM_LABEL_W;
+        const gridW= W - gridX - DRUM_CTRL_W - 8;
+
+        // Match the grid height to the sound-tab active area (keys + chords + pivots)
+        // so both tabs feel the same visual weight.
+        const gridInsetTop = KEY_TOP_PAD;                                       // 22px — same top pad as keys
+        const gridH = WHITE_KEY_H + CHORD_GAP + CHORD_BTN_H + PIVOT_GAP + PIVOT_BTN_H; // 262px
+        const rowH  = Math.floor(gridH / 5);                                    // 52px per row
+        const cellW = gridW / DRUM_STEPS;
+
+        drumBounds.ky           = ky;
+        drumBounds.areaH        = areaH;
+        drumBounds.rowH         = rowH;
+        drumBounds.gridInsetTop = gridInsetTop;
+        drumBounds.gridH        = gridH;
+        drumBounds.gridX        = gridX;
+        drumBounds.gridW        = gridW;
+        drumBounds.cellW        = cellW;
+
+        // All side elements pin to the same top/bottom as the grid
+        const gridTop = ky + gridInsetTop;
+        const gridBot = gridTop + gridH;
+
+        // BPM panel: ~68% of gridH; AUTO panel: remainder with gap
+        const bpmPanelH  = Math.round(gridH * 0.68);
+        const autoPanelY = gridTop + bpmPanelH + 6;
+        const autoPanelH = gridBot - autoPanelY;
+
+        // BPM sub-panel layout: vertically centre the full group within bpmPanelH
+        // Group = label(20) + gap(10) + upBtn(28) + gap(14) + number(38) + gap(14) + downBtn(28) = 152
+        const bpmGroupH  = 152;
+        const bpmTopPad  = Math.round((bpmPanelH - bpmGroupH) / 2);
+        const bpmLabelY  = gridTop + bpmTopPad + 10;          // label centre
+        const bpmUpY     = gridTop + bpmTopPad + 20 + 10;     // up btn top
+        const bpmNumCY   = gridTop + bpmTopPad + 20 + 10 + 28 + 14 + 19; // number centre
+        const bpmDownY   = gridTop + bpmTopPad + 20 + 10 + 28 + 14 + 38 + 14; // down btn top
+        drumBounds.bpmCY      = bpmNumCY;
+        drumBounds.bpmLabelY  = bpmLabelY;
+        drumBounds.bpmPanelH  = bpmPanelH;
+        drumBounds.autoPanelY = autoPanelY;
+        drumBounds.autoPanelH = autoPanelH;
+        // Panels fill the full DRUM_BPM_W column (flush with label column border)
+        drumBounds.bpmUp      = {x:4, y:bpmUpY,   w:DRUM_BPM_W-8, h:28};
+        drumBounds.bpmDown    = {x:4, y:bpmDownY, w:DRUM_BPM_W-8, h:28};
+        drumBounds.autoDrumBtn= {x:0, y:autoPanelY, w:DRUM_BPM_W-2, h:autoPanelH};
+
+        // Right controls: pack play / label / knob / ott / sync as a tight group, centred in gridH
+        const ctrlX      = W - DRUM_CTRL_W + 6;
+        const ctrlBtnW   = DRUM_CTRL_W - 12;
+        const playH      = 44;
+        const knobR      = 30;
+        const ottToggleH = 26;
+        const syncH      = 34;
+        const labelH     = 22;   // "SIDECHAIN" label between play and knob
+        const grpGap     = 8;
+        const ottGap     = 6;
+        const grpH       = playH + grpGap + labelH + knobR*2 + ottGap + ottToggleH + ottGap + syncH;
+        const grpTop     = gridTop + Math.round((gridH - grpH) / 2);
+
+        const playY      = grpTop;
+        const knobCY     = grpTop + playH + grpGap + labelH + knobR;
+        const ottBtnY    = knobCY + knobR + ottGap;
+        const syncY      = ottBtnY + ottToggleH + ottGap;
+
+        drumBounds.playBtn  = {x:ctrlX, y:playY,   w:ctrlBtnW, h:playH};
+        drumBounds.ottBtn   = {x:ctrlX, y:ottBtnY, w:ctrlBtnW, h:ottToggleH};
+        drumBounds.syncBtn  = {x:ctrlX, y:syncY,   w:ctrlBtnW, h:syncH};
+        drumBounds.scKnob   = {cx: ctrlX + ctrlBtnW/2, cy: knobCY, r: knobR};
+        drumBounds.scLabelY = grpTop + playH + grpGap + labelH/2;
+
+        // Individual grid cells — offset by gridInsetTop to match sound-tab proportions
+        drumBounds.cells = [];
+        for(let r=0;r<5;r++) {
+            drumBounds.cells[r] = [];
+            for(let s=0;s<DRUM_STEPS;s++) {
+                drumBounds.cells[r][s] = {
+                    x: gridX + s*cellW + 1,
+                    y: ky + gridInsetTop + r*rowH + 2,
+                    w: cellW - 2,
+                    h: rowH  - 4
+                };
+            }
+        }
+    }
+
+    function drawTabStrip() {
+        // Large tabs floating just above the keyboard/sequencer panel
+        const tabW = 120, tabH = 44;
+        const tabX = 8, tabY = sceneH - tabH;
+
+        // Left-side tabs: SOUND + RHYTHM
+        const tabs = [['SOUND','sound'],['RHYTHM','rhythm']];
+        tabs.forEach(([label,id],i) => {
+            const tx = tabX + i*(tabW+4);
+            const active = currentTab === id;
+            ctx.fillStyle = active ? '#1e0a2e' : 'rgba(10,3,20,0.94)';
+            rrect(tx, tabY, tabW, tabH, 8,8,0,0); ctx.fill();
+            ctx.strokeStyle = active ? SW.magenta : 'rgba(139,0,32,0.4)';
+            ctx.lineWidth = active ? 2 : 1;
+            rrect(tx, tabY, tabW, tabH, 8,8,0,0); ctx.stroke();
+            if(active) {
+                // Full-width amber top accent — runs to within 3px of each corner
+                ctx.strokeStyle = SW.amber; ctx.lineWidth = 3;
+                ctx.beginPath();
+                ctx.moveTo(tx+3, tabY+1.5); ctx.lineTo(tx+tabW-3, tabY+1.5); ctx.stroke();
+            }
+            ctx.fillStyle = active ? SW.amber : 'rgba(200,100,130,0.55)';
+            ctx.font = `bold 18px ${FONT}`;
+            ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+            ctx.fillText(label, tx+tabW/2, tabY+tabH/2 + 1);
+        });
+
+        // Right-side "First Try" portal — amber/vintage styling, navigates to v1
+        const ftW = 118, ftH = 44, ftX = W - ftW - 8;
+        ctx.fillStyle = 'rgba(18,10,2,0.95)';
+        rrect(ftX, tabY, ftW, ftH, 8,8,0,0); ctx.fill();
+        ctx.strokeStyle = 'rgba(160,100,20,0.55)';
+        ctx.lineWidth = 1.5;
+        rrect(ftX, tabY, ftW, ftH, 8,8,0,0); ctx.stroke();
+        // Warm top-edge accent line — full width to within 3px of corners
+        ctx.strokeStyle = 'rgba(200,140,30,0.7)'; ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(ftX+3, tabY+1.5); ctx.lineTo(ftX+ftW-3, tabY+1.5); ctx.stroke();
+        ctx.fillStyle = 'rgba(210,155,50,0.75)';
+        ctx.font = `bold 13px ${FONT}`;
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillText('◄ FIRST TRY', ftX + ftW/2, tabY + ftH/2 + 1);
+
+    }
+
+    function drawDrumSequencer() {
+        if(!drumBounds.ky) calcDrumBounds();
+        const {ky, areaH, rowH, gridInsetTop, gridH, gridX, gridW, cellW, cells,
+               bpmPanelH, autoPanelY, autoPanelH, scLabelY, bpmLabelY} = drumBounds;
+        const ctrlX  = W - DRUM_CTRL_W + 6;
+        const ctrlW  = DRUM_CTRL_W - 12;
+        const gridTop = ky + gridInsetTop;
+        const gridBot = gridTop + gridH;
+
+        // Background
+        ctx.fillStyle = '#06020e';
+        ctx.fillRect(0, ky, W, areaH + 8);
+        drawKeyboardGrid(ky);
+        ctx.strokeStyle = 'rgba(139,0,32,0.25)';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(0, ky, W, areaH + 8);
+
+        // ── BPM Panel (upper sub-panel) ────────────────────────────────────
+        const bpmCY   = drumBounds.bpmCY;
+        ctx.fillStyle = '#110622';
+        rrect(0, gridTop, DRUM_BPM_W-2, bpmPanelH, 6,6,6,6); ctx.fill();
+        ctx.strokeStyle = 'rgba(139,0,32,0.45)'; ctx.lineWidth=1.5;
+        rrect(0, gridTop, DRUM_BPM_W-2, bpmPanelH, 6,6,6,6); ctx.stroke();
+
+        ctx.fillStyle = 'rgba(220,120,140,0.7)';
+        ctx.font = `14px ${FONT}`; ctx.textAlign='center'; ctx.textBaseline='middle';
+        ctx.fillText('BPM', DRUM_BPM_W/2, bpmLabelY);
+
+        ctx.fillStyle = SW.amber;
+        ctx.font = `bold 32px ${FONT}`;
+        ctx.fillText(drumBPM, DRUM_BPM_W/2, bpmCY);
+
+        // BPM up / down
+        [drumBounds.bpmUp, drumBounds.bpmDown].forEach((b, i) => {
+            ctx.fillStyle = '#200c34';
+            rrect(b.x, b.y, b.w, b.h, 5,5,5,5); ctx.fill();
+            ctx.strokeStyle = 'rgba(139,0,32,0.5)'; ctx.lineWidth=1.5;
+            rrect(b.x, b.y, b.w, b.h, 5,5,5,5); ctx.stroke();
+            ctx.fillStyle = SW.orange;
+            ctx.font = `18px ${FONT}`; ctx.textAlign='center'; ctx.textBaseline='middle';
+            ctx.fillText(i===0?'▲':'▼', b.x+b.w/2, b.y+b.h/2);
+        });
+
+        // ── AUTO Panel (lower sub-panel) ───────────────────────────────────
+        const adb = drumBounds.autoDrumBtn;
+        if(adb) {
+            const on = autoDrum;
+            ctx.save();
+            // Panel background — distinct from BPM panel
+            ctx.fillStyle = on ? '#081a06' : '#060810';
+            rrect(adb.x, adb.y, adb.w, adb.h, 6,6,6,6); ctx.fill();
+            ctx.strokeStyle = on ? 'rgba(80,220,80,0.9)' : 'rgba(80,220,80,0.22)';
+            ctx.lineWidth = on ? 2 : 1;
+            rrect(adb.x, adb.y, adb.w, adb.h, 6,6,6,6); ctx.stroke();
+            if(on) {
+                ctx.globalCompositeOperation = 'screen';
+                ctx.globalAlpha = 0.18;
+                ctx.fillStyle = '#40e040';
+                rrect(adb.x+2, adb.y+2, adb.w-4, adb.h-4, 4,4,4,4); ctx.fill();
+                ctx.globalCompositeOperation = 'source-over';
+                ctx.globalAlpha = 1;
+                const pulse = 0.5 + 0.5 * Math.sin(globalTime * 2.8);
+                ctx.globalAlpha = 0.5 + pulse * 0.5;
+                ctx.fillStyle = '#60ff60';
+                ctx.beginPath();
+                ctx.arc(adb.x + adb.w/2, adb.y + adb.h * 0.72, 3, 0, Math.PI*2);
+                ctx.fill();
+                ctx.globalAlpha = 1;
+            }
+            ctx.fillStyle = on ? '#80ff80' : 'rgba(80,220,80,0.45)';
+            ctx.font = `bold 13px ${FONT}`;
+            ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+            ctx.fillText('AUTO', adb.x + adb.w/2, adb.y + adb.h * 0.5);
+            if(!on) {
+                ctx.fillStyle = 'rgba(80,180,80,0.28)';
+                ctx.font = `10px ${FONT}`;
+                ctx.fillText('rhythm', adb.x + adb.w/2, adb.y + adb.h * 0.72);
+            }
+            ctx.restore();
+        }
+
+        // ── Row labels + grid ─────────────────────────────────────────────
+        const ROW_COLORS = [SW.amber, SW.hotPink, SW.hotPink, SW.orange, SW.crimson];
+
+        // Visual playhead: computed from AudioContext time so it stays in sync with audio
+        // (drumStep is the scheduler counter which runs ahead by up to LOOKAHEAD ms)
+        let drumVisualStep = -1;
+        if(drumPlaying && audioCtx && drumStartTime > 0) {
+            const elapsed = audioCtx.currentTime - drumStartTime;
+            if(elapsed >= 0) {
+                drumVisualStep = Math.floor(elapsed / drumStepDur()) % DRUM_STEPS;
+            }
+        }
+
+        for(let r=0;r<5;r++) {
+            // Row label
+            ctx.fillStyle = ROW_COLORS[r] + 'cc';
+            ctx.font = `bold 13px ${FONT}`; ctx.textAlign='right'; ctx.textBaseline='middle';
+            ctx.fillText(DRUM_ROWS[r], DRUM_BPM_W + DRUM_LABEL_W - 6, ky + gridInsetTop + r*rowH + rowH/2);
+
+            for(let s=0;s<DRUM_STEPS;s++) {
+                const c = cells[r][s];
+                const isActive  = drumPattern[r][s];
+                const isCurrent = drumVisualStep === s;
+                const isBeat    = s % 8 === 0;   // bar start — every 8 steps
+                const isHalf    = s % 4 === 0;   // half-beat — every 4 steps
+                const isQtr     = s % 2 === 0;   // quarter subdivision — every 2 steps
+
+                // Cell background — 4 distinct brightness levels
+                let bg = isBeat  ? '#280e48' :    // bar start: bright purple
+                         isHalf  ? '#1e0a38' :    // half-beat: medium purple
+                         isQtr   ? '#160828' :    // quarter sub: dark purple
+                                   '#0e0420';     // 16th: almost black
+                ctx.fillStyle = bg;
+                rrect(c.x, c.y, c.w, c.h, 3,3,3,3); ctx.fill();
+
+                if(isActive) {
+                    ctx.fillStyle = ROW_COLORS[r];
+                    ctx.globalAlpha = isCurrent ? 1.0 : 0.82;
+                    rrect(c.x, c.y, c.w, c.h, 3,3,3,3); ctx.fill();
+                    ctx.globalAlpha = 1;
+                    // Active cell inner glow
+                    ctx.fillStyle = 'rgba(255,255,255,0.12)';
+                    rrect(c.x+2, c.y+2, c.w-4, Math.min(4, c.h*0.35), 2,2,0,0); ctx.fill();
+                } else if(isCurrent) {
+                    // Playhead highlight on empty cell
+                    ctx.fillStyle = 'rgba(255,200,100,0.18)';
+                    rrect(c.x, c.y, c.w, c.h, 3,3,3,3); ctx.fill();
+                }
+
+                // Cell border — beat starts get a brighter border
+                if(isBeat) {
+                    ctx.strokeStyle = 'rgba(200,80,120,0.5)';
+                    ctx.lineWidth = 1;
+                } else {
+                    ctx.strokeStyle = isActive ? ROW_COLORS[r]+'88' : 'rgba(100,30,60,0.4)';
+                    ctx.lineWidth = 0.5;
+                }
+                rrect(c.x, c.y, c.w, c.h, 3,3,3,3); ctx.stroke();
+            }
+        }
+
+        // Bar lines (every 8 steps) — bright and thick, span only the grid area
+        ctx.strokeStyle = 'rgba(255,80,60,0.55)'; ctx.lineWidth = 2;
+        for(const b of [8, 16, 24]) {
+            const bx = gridX + b * cellW;
+            ctx.beginPath(); ctx.moveTo(bx, gridTop); ctx.lineTo(bx, gridBot); ctx.stroke();
+        }
+        // Half-beat lines (every 4 steps) — medium
+        ctx.strokeStyle = 'rgba(180,60,80,0.3)'; ctx.lineWidth = 1;
+        for(const b of [4, 12, 20, 28]) {
+            const bx = gridX + b * cellW;
+            ctx.beginPath(); ctx.moveTo(bx, gridTop); ctx.lineTo(bx, gridBot); ctx.stroke();
+        }
+
+        // ── Right control panel ───────────────────────────────────────────
+
+        // Play / Pause button
+        const pb = drumBounds.playBtn;
+        ctx.fillStyle = drumPlaying ? '#220a38' : '#110622';
+        rrect(pb.x, pb.y, pb.w, pb.h, 7,7,7,7); ctx.fill();
+        ctx.strokeStyle = drumPlaying ? SW.magenta : 'rgba(139,0,32,0.5)';
+        ctx.lineWidth = drumPlaying ? 2 : 1.5;
+        rrect(pb.x, pb.y, pb.w, pb.h, 7,7,7,7); ctx.stroke();
+
+        ctx.fillStyle = drumPlaying ? SW.amber : SW.orange;
+        ctx.font = `bold 17px ${FONT}`; ctx.textAlign='center'; ctx.textBaseline='middle';
+        ctx.fillText(drumPlaying ? '❚❚ STOP' : '▶ PLAY', pb.x+pb.w/2, pb.y+pb.h/2);
+
+        // Sidechain knob
+        const sk = drumBounds.scKnob;
+        const trackR = sk.r - 8;
+        // Label (centred in the reserved label row between play btn and knob)
+        ctx.fillStyle = 'rgba(220,120,140,0.7)';
+        ctx.font = `bold 11px ${FONT}`; ctx.textAlign='center'; ctx.textBaseline='middle';
+        ctx.fillText('SIDECHAIN', sk.cx, scLabelY);
+        // Outer glow ring
+        ctx.save();
+        ctx.shadowColor = SW.magenta; ctx.shadowBlur = sidechainAmt > 0.05 ? 14 : 0;
+        ctx.beginPath(); ctx.arc(sk.cx, sk.cy, sk.r, 0, Math.PI*2);
+        ctx.fillStyle = '#110622'; ctx.fill();
+        ctx.strokeStyle = `rgba(139,0,32,${0.4 + sidechainAmt*0.5})`; ctx.lineWidth=2; ctx.stroke();
+        ctx.restore();
+        // Knob track arc
+        const startA = Math.PI * 0.75, endA = Math.PI * 2.25;
+        const valA   = startA + sidechainAmt * (endA - startA);
+        ctx.beginPath(); ctx.arc(sk.cx, sk.cy, trackR, startA, endA);
+        ctx.strokeStyle = 'rgba(100,30,60,0.55)'; ctx.lineWidth=5; ctx.stroke();
+        ctx.beginPath(); ctx.arc(sk.cx, sk.cy, trackR, startA, valA);
+        ctx.strokeStyle = SW.magenta; ctx.lineWidth=5; ctx.stroke();
+        // Indicator dot
+        ctx.beginPath(); ctx.arc(sk.cx + Math.cos(valA)*trackR, sk.cy + Math.sin(valA)*trackR, 5.5, 0, Math.PI*2);
+        ctx.fillStyle = SW.amber; ctx.fill();
+        // Value text
+        ctx.fillStyle = SW.amber;
+        ctx.font = `bold 14px ${FONT}`; ctx.textAlign='center'; ctx.textBaseline='middle';
+        ctx.fillText(Math.round(sidechainAmt*100)+'%', sk.cx, sk.cy);
+
+        // OTT / NORMAL sidechain mode toggle
+        const ob = drumBounds.ottBtn;
+        if(ob) {
+            ctx.fillStyle = ottMode ? '#2a0416' : '#0d0320';
+            rrect(ob.x, ob.y, ob.w, ob.h, 5,5,5,5); ctx.fill();
+            ctx.strokeStyle = ottMode ? SW.hotPink : 'rgba(139,0,32,0.45)';
+            ctx.lineWidth = ottMode ? 2 : 1.5;
+            rrect(ob.x, ob.y, ob.w, ob.h, 5,5,5,5); ctx.stroke();
+            if(ottMode) {
+                ctx.save();
+                ctx.shadowColor = SW.hotPink; ctx.shadowBlur = 10;
+            }
+            ctx.fillStyle = ottMode ? SW.hotPink : 'rgba(200,100,120,0.55)';
+            ctx.font = `bold 11px ${FONT}`; ctx.textAlign='center'; ctx.textBaseline='middle';
+            ctx.fillText(ottMode ? 'OTT' : 'NORMAL', ob.x+ob.w/2, ob.y+ob.h/2);
+            if(ottMode) ctx.restore();
+        }
+
+        // Sync toggle
+        const sb = drumBounds.syncBtn;
+        ctx.fillStyle = syncEnabled ? '#1a0830' : '#0a0318';
+        rrect(sb.x, sb.y, sb.w, sb.h, 6,6,6,6); ctx.fill();
+        ctx.strokeStyle = syncEnabled ? '#00e5ff' : 'rgba(139,0,32,0.4)';
+        ctx.lineWidth = syncEnabled ? 2 : 1.5;
+        rrect(sb.x, sb.y, sb.w, sb.h, 6,6,6,6); ctx.stroke();
+        ctx.fillStyle = syncEnabled ? SW.amber : 'rgba(200,100,120,0.6)';
+        ctx.font = `bold 14px ${FONT}`; ctx.textAlign='center'; ctx.textBaseline='middle';
+        ctx.fillText('SYNC ' + (syncEnabled?'ON':'OFF'), sb.x+sb.w/2, sb.y+sb.h/2);
+    }
+
+    function drawOrbs() {
+        for(const o of orbs){
+            if(o.x<-50||o.x>W+50) continue;
+            const a = o.alpha;
+
+            // o.hue is either chord hue (0-360) or note pitch hue — use directly
+            const orbHue = o.hue;
+            const cr = o.radius * 1.2; // circle draw radius
+
+            // ── Shed debris — particles left behind in world space ───────────
+            if(o.debris.length > 0) {
+                ctx.save();
+                ctx.globalCompositeOperation = 'screen';
+                for(const d of o.debris) {
+                    const da = d.alpha * a;
+                    if(da < 0.015) continue;
+                    // Sparks (small circles) render brighter; shapes are softer
+                    const lightness = d.sz < 1.5 ? 95 : 60 + d.alpha * 22;
+                    drawTrailShape(d.x, d.y, d.sz, d.rot, d.shapeIdx,
+                                   hsl(d.hue, 100, lightness), da);
+                }
+                ctx.restore();
+
+                // Opaque mask — hide debris overlapping the orb body
+                ctx.save();
+                ctx.globalAlpha = o.alpha;
+                ctx.fillStyle = '#0c0614';
+                ctx.beginPath(); ctx.arc(o.x, o.y, cr * 0.92, 0, Math.PI*2); ctx.fill();
+                ctx.restore();
+            }
+
+            // ── Bloom glow ──────────────────────────────────────────────────
+            const bloom = 1 + o.bloomPulse * 1.0;
+            const gr = o.radius * (3.5 + o.bloomPulse * 2) * bloom;
+            const gg = ctx.createRadialGradient(o.x, o.y, 0, o.x, o.y, gr);
+            const ba = Math.min(1, 0.28 + o.bloomPulse * 0.3) * a;
+            gg.addColorStop(0, `hsla(${orbHue},100%,80%,${ba})`);
+            gg.addColorStop(0.25, `hsla(${orbHue},90%,60%,${(0.10+o.bloomPulse*0.12)*a})`);
+            gg.addColorStop(1, `hsla(${orbHue},80%,50%,0)`);
+            ctx.fillStyle = gg;
+            ctx.beginPath(); ctx.arc(o.x, o.y, gr, 0, Math.PI*2); ctx.fill();
+
+            // ── Circle — glow pass then crisp core ─────────────────────────
+            ctx.save();
+            const travelAngle = Math.atan2(o.vy, o.vx);
+            ctx.globalAlpha = 0.32 * a;
+            ctx.strokeStyle = hsl(orbHue, 100, 70);
+            ctx.lineWidth = 7;
+            pathOrbShape(o.x, o.y, cr, o.shape, travelAngle); ctx.stroke();
+
+            ctx.globalAlpha = 0.95 * a;
+            ctx.strokeStyle = hsl(orbHue, 100, 88);
+            ctx.lineWidth = 3.5;
+            pathOrbShape(o.x, o.y, cr, o.shape, travelAngle); ctx.stroke();
+            ctx.restore();
+
+        }
+    }
+
+    function rrect(x,y,w,h,tl,tr,br,bl) {
+        ctx.beginPath();
+        ctx.moveTo(x+tl,y); ctx.lineTo(x+w-tr,y);
+        ctx.quadraticCurveTo(x+w,y,x+w,y+tr);
+        ctx.lineTo(x+w,y+h-br);
+        ctx.quadraticCurveTo(x+w,y+h,x+w-br,y+h);
+        ctx.lineTo(x+bl,y+h);
+        ctx.quadraticCurveTo(x,y+h,x,y+h-bl);
+        ctx.lineTo(x,y+tl); ctx.quadraticCurveTo(x,y,x+tl,y);
+        ctx.closePath();
+    }
+
+    // Generic up/down spinner widget used by all three selectors
+    function drawSpinner(bounds, label, valueText, valueColor, borderColor) {
+        const {x,y,w,h} = bounds;
+        if(w===0) return;
+        ctx.save();
+        ctx.fillStyle = '#0a0a18';
+        rrect(x,y,w,h,6,6,6,6); ctx.fill();
+        const spinnerBorder = (pivotFlashT > 0)
+            ? `hsla(${pivotHue},80%,60%,${0.3 + pivotFlashT * 0.7})`
+            : (borderColor||'rgba(255,69,0,0.3)');
+        ctx.strokeStyle = spinnerBorder; ctx.lineWidth = pivotFlashT > 0 ? 1.5 : 1;
+        rrect(x,y,w,h,6,6,6,6); ctx.stroke();
+
+        ctx.textAlign='center'; ctx.textBaseline='middle';
+        const cx = x + w/2;
+
+        // Label
+        ctx.fillStyle = SW.amber; ctx.font = '12px '+FONT;
+        ctx.fillText(label, cx, y+11);
+
+        // Up arrow
+        const arrowW = Math.min(10, w*0.30);
+        const upY = y + h*0.30;
+        ctx.fillStyle = SW.orange; ctx.beginPath();
+        ctx.moveTo(cx, upY-arrowW*0.8); ctx.lineTo(cx+arrowW, upY+arrowW*0.4);
+        ctx.lineTo(cx-arrowW, upY+arrowW*0.4); ctx.closePath(); ctx.fill();
+
+        // Value text — soft glow ring behind it
+        ctx.globalAlpha = 0.15;
+        ctx.fillStyle = valueColor||SW.amber;
+        ctx.beginPath(); ctx.arc(cx, y+h/2, w*0.40, 0, Math.PI*2); ctx.fill();
+        // Pivot flash: extra hue-colored corona on KEY/MODE spinners
+        if(pivotFlashT > 0) {
+            const pfe = pivotFlashT * pivotFlashT * (3 - 2 * pivotFlashT);
+            ctx.globalAlpha = pfe * 0.55;
+            ctx.fillStyle = `hsla(${pivotHue},90%,65%,1)`;
+            ctx.beginPath(); ctx.arc(cx, y+h/2, w*0.52, 0, Math.PI*2); ctx.fill();
+            ctx.globalAlpha = pfe * 0.20;
+            ctx.fillStyle = `hsla(${pivotHue},80%,70%,1)`;
+            ctx.beginPath(); ctx.arc(cx, y+h/2, w*0.72, 0, Math.PI*2); ctx.fill();
+        }
+        ctx.globalAlpha = 1;
+        ctx.fillStyle = pivotFlashT > 0
+            ? `hsla(${pivotHue},90%,80%,${0.4 + pivotFlashT * 0.6})`
+            : (valueColor||SW.amber);
+        ctx.font = '22px '+FONT;
+        ctx.fillText(valueText, cx, y+h/2+1);
+
+        // Down arrow
+        const dnY = y + h*0.72;
+        ctx.fillStyle = SW.orange; ctx.beginPath();
+        ctx.moveTo(cx, dnY+arrowW*0.8); ctx.lineTo(cx+arrowW, dnY-arrowW*0.4);
+        ctx.lineTo(cx-arrowW, dnY-arrowW*0.4); ctx.closePath(); ctx.fill();
+
+        ctx.restore();
+    }
+
+    function drawKeySelector() {
+        drawSpinner(keySelBounds, 'KEY', NOTE_NAMES[currentKey], SW.amber);
+    }
+
+    function drawModeSelector() {
+        drawSpinner(modeSelBounds, 'MODE', MODES[currentMode].short, SW.orange);
+    }
+
+    function drawSoundSelector() {
+        const p = SOUND_PRESETS[currentPreset];
+        // Taller box: draw label + arrows + name + index dots
+        const {x,y,w,h} = soundSelBounds;
+        if(w===0) return;
+        ctx.save();
+        ctx.fillStyle = '#0a0a18';
+        rrect(x,y,w,h,6,6,6,6); ctx.fill();
+        ctx.strokeStyle = 'rgba(255,69,0,0.3)'; ctx.lineWidth=1;
+        rrect(x,y,w,h,6,6,6,6); ctx.stroke();
+
+        ctx.textAlign='center'; ctx.textBaseline='middle';
+        const cx = x + w/2;
+
+        // Label
+        ctx.fillStyle = SW.amber; ctx.font = '12px '+FONT; ctx.fillText('SOUND', cx, y+11);
+
+        // Up arrow
+        const arrowW = Math.min(10, w*0.30);
+        const upY = y + h*0.22;
+        ctx.fillStyle = SW.orange; ctx.beginPath();
+        ctx.moveTo(cx, upY-arrowW*0.8); ctx.lineTo(cx+arrowW, upY+arrowW*0.4);
+        ctx.lineTo(cx-arrowW, upY+arrowW*0.4); ctx.closePath(); ctx.fill();
+
+        // Glow + name
+        ctx.globalAlpha = 0.18;
+        ctx.fillStyle = p.color;
+        ctx.beginPath(); ctx.arc(cx, y+h/2, w*0.44, 0, Math.PI*2); ctx.fill();
+        ctx.globalAlpha = 1;
+        ctx.fillStyle = p.color; ctx.font = '18px '+FONT;
+        ctx.fillText(p.name, cx, y+h/2);
+
+        // Down arrow
+        const dnY = y + h*0.76;
+        ctx.fillStyle = SW.orange; ctx.beginPath();
+        ctx.moveTo(cx, dnY+arrowW*0.8); ctx.lineTo(cx+arrowW, dnY-arrowW*0.4);
+        ctx.lineTo(cx-arrowW, dnY-arrowW*0.4); ctx.closePath(); ctx.fill();
+
+        // Index dots at bottom
+        const dotR = 3, dotSpacing = 9;
+        const dotsW = (SOUND_PRESETS.length-1)*dotSpacing;
+        const dotStartX = cx - dotsW/2;
+        for(let i=0; i<SOUND_PRESETS.length; i++) {
+            ctx.globalAlpha = i===currentPreset ? 1 : 0.25;
+            ctx.fillStyle = i===currentPreset ? p.color : SW.amber;
+            ctx.beginPath();
+            ctx.arc(dotStartX+i*dotSpacing, y+h-11, dotR, 0, Math.PI*2);
+            ctx.fill();
+        }
+        ctx.globalAlpha = 1;
+        ctx.restore();
+    }
+
+    // ─── BED selector drawing (same style as sound selector, teal palette) ────
+    function drawBedSelector() {
+        const p = BED_PRESETS[currentBed];
+        const {x,y,w,h} = bedBounds;
+        if(w===0) return;
+        ctx.save();
+        ctx.fillStyle = bedEnabled ? '#040f0e' : '#080d0c';
+        rrect(x,y,w,h,6,6,6,6); ctx.fill();
+        // Border — teal glow when active
+        if(bedEnabled) {
+            ctx.shadowColor = p.color; ctx.shadowBlur = 10;
+            ctx.strokeStyle = p.color+'cc'; ctx.lineWidth = 1.5;
+        } else {
+            ctx.strokeStyle = 'rgba(0,180,130,0.25)'; ctx.lineWidth = 1;
+        }
+        rrect(x,y,w,h,6,6,6,6); ctx.stroke();
+        ctx.shadowBlur = 0;
+
+        ctx.textAlign='center'; ctx.textBaseline='middle';
+        const cx = x + w/2;
+
+        // Label
+        const labelCol = bedEnabled ? p.color : 'rgba(0,180,130,0.6)';
+        ctx.fillStyle = labelCol; ctx.font = '12px '+FONT;
+        ctx.fillText('BED', cx, y+11);
+
+        // Up arrow
+        const arrowW = Math.min(10, w*0.30);
+        const upY = y + h*0.22;
+        ctx.fillStyle = bedEnabled ? p.color : 'rgba(0,180,130,0.45)';
+        ctx.beginPath();
+        ctx.moveTo(cx, upY-arrowW*0.8); ctx.lineTo(cx+arrowW, upY+arrowW*0.4);
+        ctx.lineTo(cx-arrowW, upY+arrowW*0.4); ctx.closePath(); ctx.fill();
+
+        // Glow ring + name
+        ctx.globalAlpha = bedEnabled ? 0.22 : 0.08;
+        ctx.fillStyle = p.color;
+        ctx.beginPath(); ctx.arc(cx, y+h/2, w*0.44, 0, Math.PI*2); ctx.fill();
+        ctx.globalAlpha = 1;
+        ctx.fillStyle = bedEnabled ? p.color : 'rgba(0,180,130,0.50)';
+        ctx.font = '18px '+FONT;
+        ctx.fillText(p.name, cx, y+h/2 - (bedLoading ? 8 : 0));
+
+        // Loading spinner + status text
+        if(bedLoading) {
+            const spin = (globalTime * 3) % (Math.PI * 2);
+            ctx.strokeStyle = p.color; ctx.lineWidth = 1.5;
+            ctx.globalAlpha = 0.7;
+            ctx.beginPath(); ctx.arc(cx - 10, y+h/2+12, 5, spin, spin + Math.PI * 1.4);
+            ctx.stroke();
+            ctx.fillStyle = p.color; ctx.font = `10px ${FONT}`; ctx.globalAlpha = 0.7;
+            ctx.fillText('LOADING', cx + 4, y+h/2+13);
+            ctx.globalAlpha = 1;
+        }
+
+        // Down arrow
+        const dnY = y + h*0.76;
+        ctx.fillStyle = bedEnabled ? p.color : 'rgba(0,180,130,0.45)';
+        ctx.beginPath();
+        ctx.moveTo(cx, dnY+arrowW*0.8); ctx.lineTo(cx+arrowW, dnY-arrowW*0.4);
+        ctx.lineTo(cx-arrowW, dnY-arrowW*0.4); ctx.closePath(); ctx.fill();
+
+        // Index dots
+        const dotR = 3, dotSpacing = 9;
+        const dotsW = (BED_PRESETS.length-1)*dotSpacing;
+        const dotStartX = cx - dotsW/2;
+        for(let i=0; i<BED_PRESETS.length; i++) {
+            ctx.globalAlpha = i===currentBed ? 1 : 0.25;
+            ctx.fillStyle = i===currentBed ? p.color : 'rgba(0,180,130,0.6)';
+            ctx.beginPath();
+            ctx.arc(dotStartX+i*dotSpacing, y+h-11, dotR, 0, Math.PI*2);
+            ctx.fill();
+        }
+        ctx.globalAlpha = 1;
+        ctx.restore();
+    }
+
+    // ─── Octave toggle drawing ─────────────────────────────────────────────────
+    function drawOctaveToggle() {
+        const {x,y,w,h} = octaveBounds;
+        if(w===0) return;
+        ctx.save();
+
+        // Background
+        ctx.fillStyle = '#07070f';
+        rrect(x,y,w,h,6,6,6,6); ctx.fill();
+
+        // Border — cyan tint, brighter when shifted
+        const shifted = currentOctave !== 0;
+        const borderAlpha = shifted ? 0.7 : 0.22;
+        ctx.strokeStyle = `rgba(0,240,255,${borderAlpha})`;
+        ctx.lineWidth = shifted ? 1.5 : 1;
+        if(shifted) { ctx.shadowColor='#00f0ff'; ctx.shadowBlur=6; }
+        rrect(x,y,w,h,6,6,6,6); ctx.stroke();
+        ctx.shadowBlur = 0;
+
+        const cx = x + w/2;
+        const cy = y + h/2;
+
+        // Label at top
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillStyle = 'rgba(0,240,255,0.5)';
+        ctx.font = `11px ${FONT}`;
+        ctx.fillText('OCTAVE', cx, y + 13);
+
+        // ◄ left arrow button zone (left 30%)
+        const arrowZoneW = w * 0.28;
+        const arrowCX_L  = x + arrowZoneW * 0.5;
+        const arrowCX_R  = x + w - arrowZoneW * 0.5;
+        const arrowY     = cy + 6;
+        const arrowSz    = 9;
+        const canGoLeft  = currentOctave > -2;
+        const canGoRight = currentOctave < 2;
+
+        // Left arrow ◄
+        ctx.fillStyle = canGoLeft ? '#00f0ff' : 'rgba(0,240,255,0.2)';
+        ctx.beginPath();
+        ctx.moveTo(arrowCX_L - arrowSz*0.8, arrowY);
+        ctx.lineTo(arrowCX_L + arrowSz*0.6, arrowY - arrowSz*0.7);
+        ctx.lineTo(arrowCX_L + arrowSz*0.6, arrowY + arrowSz*0.7);
+        ctx.closePath(); ctx.fill();
+
+        // Right arrow ►
+        ctx.fillStyle = canGoRight ? '#00f0ff' : 'rgba(0,240,255,0.2)';
+        ctx.beginPath();
+        ctx.moveTo(arrowCX_R + arrowSz*0.8, arrowY);
+        ctx.lineTo(arrowCX_R - arrowSz*0.6, arrowY - arrowSz*0.7);
+        ctx.lineTo(arrowCX_R - arrowSz*0.6, arrowY + arrowSz*0.7);
+        ctx.closePath(); ctx.fill();
+
+        // Octave value display — large centred text
+        const octLabel = currentOctave === 0 ? '0'
+                        : currentOctave > 0  ? `+${currentOctave}`
+                        : `${currentOctave}`;
+        const valColor = currentOctave === 0 ? 'rgba(0,240,255,0.55)'
+                        : currentOctave > 0  ? '#ffda00'
+                        : '#ff2975';
+        // Subtle glow circle behind label
+        ctx.globalAlpha = shifted ? 0.12 : 0.06;
+        ctx.fillStyle = valColor;
+        ctx.beginPath(); ctx.arc(cx, arrowY, 22, 0, Math.PI*2); ctx.fill();
+        ctx.globalAlpha = 1;
+
+        ctx.fillStyle = valColor;
+        ctx.font = `bold 28px ${FONT}`;
+        ctx.fillText(octLabel, cx, arrowY);
+
+        // Small pip dots showing range (-2 to +2) at bottom
+        const pipCount = 5; // one per octave step
+        const pipSpacing = 12;
+        const pipStartX = cx - (pipCount-1)/2 * pipSpacing;
+        for(let i=0; i<pipCount; i++) {
+            const oct = i - 2; // maps 0→-2, 1→-1, 2→0, 3→+1, 4→+2
+            const isActive = oct === currentOctave;
+            ctx.globalAlpha = isActive ? 1 : 0.2;
+            ctx.fillStyle = isActive ? valColor : '#00f0ff';
+            ctx.beginPath();
+            ctx.arc(pipStartX + i*pipSpacing, y+h-11, isActive ? 4 : 2.5, 0, Math.PI*2);
+            ctx.fill();
+        }
+        ctx.globalAlpha = 1;
+        ctx.restore();
+    }
+
+    // ─── BED audio system ─────────────────────────────────────────────────────
+    // Recordings are fetched, silence-trimmed, crossfade-looped, then played
+    // through a wet/dry reverb split. Prepared buffers are cached per preset.
+
+    function makeBedReverb() {
+        const sr  = audioCtx.sampleRate;
+        const dur = 3.8; // long lush tail suits nature sounds
+        const len = Math.floor(sr * dur);
+        const buf = audioCtx.createBuffer(2, len, sr);
+        for(let ch = 0; ch < 2; ch++) {
+            const d = buf.getChannelData(ch);
+            const offset = ch * Math.floor(sr * 0.021); // stereo decorrelation
+            for(let i = 0; i < len; i++) {
+                const t = (i + offset) / sr;
+                const env = Math.pow(Math.max(0, 1 - t / dur), 2.0);
+                d[i] = (Math.random()*2-1) * env * 0.26;
+            }
+        }
+        const conv = audioCtx.createConvolver();
+        conv.buffer = buf;
+        return conv;
+    }
+
+    function ensureBedGain() {
+        if(!bedGainNode) {
+            bedGainNode = audioCtx.createGain();
+            bedGainNode.gain.value = 0;
+            bedGainNode.connect(masterBus);
+        }
+        if(!bedRevNode) {
+            bedRevNode    = makeBedReverb();
+            bedRevWetGain = audioCtx.createGain();
+            bedRevWetGain.gain.value = 0.42; // 42% wet send
+            bedRevNode.connect(bedRevWetGain);
+            bedRevWetGain.connect(bedGainNode);
+        }
+    }
+
+    function stopBedSrc() {
+        if(bedSrc) { try { bedSrc.stop(); } catch(e) {} bedSrc = null; }
+        bedExtraNodes.forEach(n => { try { n.stop?.(); n.disconnect?.(); } catch(e) {} });
+        bedExtraNodes = [];
+    }
+
+    // Strip leading/trailing silence using 50ms RMS windows (keeps 200ms padding)
+    function trimSilentEdges(buf, threshold = 0.003) {
+        const sr  = buf.sampleRate;
+        const win = Math.floor(sr * 0.05);  // 50ms window
+        const pad = Math.floor(sr * 0.20);  // 200ms padding kept
+        const ch0 = buf.getChannelData(0);
+        const len = buf.length;
+        function rms(s) {
+            const e = Math.min(s + win, len); let sum = 0;
+            for(let i = s; i < e; i++) sum += ch0[i]*ch0[i];
+            return Math.sqrt(sum / (e - s));
+        }
+        let start = 0;
+        for(let i = 0; i + win < len; i += win) {
+            if(rms(i) > threshold) { start = Math.max(0, i - pad); break; }
+        }
+        let end = len;
+        for(let i = len - win; i > 0; i -= win) {
+            if(rms(i) > threshold) { end = Math.min(len, i + win + pad); break; }
+        }
+        if(start === 0 && end === len) return buf;
+        const out = audioCtx.createBuffer(buf.numberOfChannels, end - start, sr);
+        for(let ch = 0; ch < buf.numberOfChannels; ch++)
+            out.getChannelData(ch).set(buf.getChannelData(ch).subarray(start, end));
+        return out;
+    }
+
+    // Cosine crossfade at loop point — blends tail back into head for a seamless loop
+    function makeCrossfadeLoop(buf) {
+        const sr  = buf.sampleRate;
+        const len = buf.length;
+        const xfadeSec = Math.min(2.0, (len / sr) * 0.18); // up to 2s, max 18% of duration
+        const xLen = Math.floor(sr * xfadeSec);
+        if(xLen < 512 || len <= xLen * 2) return buf;
+        const out = audioCtx.createBuffer(buf.numberOfChannels, len, sr);
+        for(let ch = 0; ch < buf.numberOfChannels; ch++) {
+            const src = buf.getChannelData(ch);
+            const dst = out.getChannelData(ch);
+            dst.set(src);
+            for(let i = 0; i < xLen; i++) {
+                const t       = i / xLen;
+                const fadeIn  = 0.5 - 0.5 * Math.cos(Math.PI * t); // 0→1
+                const fadeOut = 1 - fadeIn;                          // 1→0
+                dst[len - xLen + i] = src[len - xLen + i] * fadeOut + src[i] * fadeIn;
+            }
+        }
+        return out;
+    }
+
+    // Prepare a decoded buffer for looped playback: trim silence then crossfade the loop point
+    function prepareBedBuffer(buf) { return makeCrossfadeLoop(trimSilentEdges(buf)); }
+
+    // Start an AudioBufferSourceNode through a 70/42% dry/wet reverb split
+    function startBedBuffer(buf) {
+        stopBedSrc();
+        ensureBedGain();
+        const src = audioCtx.createBufferSource();
+        src.buffer = buf; src.loop = true;
+        // Dry path
+        const dryGain = audioCtx.createGain(); dryGain.gain.value = 0.70;
+        src.connect(dryGain); dryGain.connect(bedGainNode);
+        // Wet path through shared reverb
+        src.connect(bedRevNode);
+        src.start();
+        bedSrc = src;
+    }
+
+    // Search Wikimedia Commons for AUDIO files only — uses generator+imageinfo to filter by MIME type
+    async function searchWikiAudio(query) {
+        const ctrl = new AbortController();
+        const tid = setTimeout(() => ctrl.abort(), 10000);
+        try {
+            // generator=search + prop=imageinfo&iiprop=mime lets us filter to audio/* before fetching
+            const r = await fetch(
+                'https://commons.wikimedia.org/w/api.php?action=query&generator=search' +
+                '&gsrsearch=' + encodeURIComponent(query) +
+                '&gsrnamespace=6&gsrlimit=12' +
+                '&prop=imageinfo&iiprop=mime' +
+                '&format=json&origin=*',
+                { signal: ctrl.signal }
+            );
+            clearTimeout(tid);
+            if(!r.ok) return [];
+            const d = await r.json();
+            return Object.values(d.query?.pages || {})
+                .filter(p => p.imageinfo?.[0]?.mime?.startsWith('audio/'))
+                .map(p => p.title.replace(/^File:/, ''));
+        } catch(e) { clearTimeout(tid); return []; }
+    }
+
+    // Try to fetch one Wikimedia file — prefers MP3 transcode (works on Safari), falls back to OGG
+    async function tryFetchWikiFile(filename) {
+        const ctrl = new AbortController();
+        const tid = setTimeout(() => ctrl.abort(), 8000);
+        try {
+            // Request both videoinfo (has derivatives/transcodes) and imageinfo (has original URL)
+            const apiResp = await fetch(
+                'https://commons.wikimedia.org/w/api.php?action=query' +
+                '&titles=File:' + encodeURIComponent(filename) +
+                '&prop=videoinfo|imageinfo&viprop=url|derivatives&iiprop=url&format=json&origin=*',
+                { signal: ctrl.signal }
+            );
+            clearTimeout(tid);
+            if(!apiResp.ok) return null;
+            const data = await apiResp.json();
+            const page = Object.values(data.query.pages)[0];
+            if(!page || page.missing !== undefined) return null;
+
+            // Prefer a transcoded MP3 (broad browser compatibility incl. Safari)
+            let audioUrl = null;
+            const vi = page.videoinfo?.[0];
+            if(vi) {
+                const derivs = vi.derivatives || [];
+                const mp3 = derivs.find(d => d.type === 'audio/mpeg' || d.shorttitle?.endsWith('.mp3'));
+                audioUrl = mp3?.src || vi.url;
+            }
+            // Fall back to imageinfo original URL
+            if(!audioUrl) audioUrl = page.imageinfo?.[0]?.url;
+            if(!audioUrl) return null;
+
+            const ctrl2 = new AbortController();
+            const tid2 = setTimeout(() => ctrl2.abort(), 30000);
+            const resp = await fetch(audioUrl, { signal: ctrl2.signal });
+            clearTimeout(tid2);
+            if(!resp.ok) return null;
+            const arrayBuf = await resp.arrayBuffer();
+            return await audioCtx.decodeAudioData(arrayBuf);
+        } catch(e) {
+            clearTimeout(tid);
+            return null;
+        }
+    }
+
+    // Fetch all candidate filenames for a preset: start with known filenames,
+    // then fall back to a Wikimedia Commons search for presets that need it.
+    async function resolveBedFiles(idx) {
+        const preset = BED_PRESETS[idx];
+        let filenames = [...preset.files]; // try hardcoded names first (faster)
+        if(preset.search) {
+            const found = await searchWikiAudio(preset.search); // then search-discovered audio files
+            filenames = [...filenames, ...found];
+        }
+        return filenames;
+    }
+
+    async function loadBedRecording() {
+        if(!audioReady) return;
+        ensureBedGain();
+        const bedIdx = currentBed;
+
+        // Use cached buffer immediately if available
+        if(bedBufCache[bedIdx]) { startBedBuffer(bedBufCache[bedIdx]); return; }
+
+        bedLoading = true;
+        const filenames = await resolveBedFiles(bedIdx);
+        for(const file of filenames) {
+            if(currentBed !== bedIdx) { bedLoading = false; return; } // user switched preset
+            const buf = await tryFetchWikiFile(file);
+            if(buf) {
+                const prepared = prepareBedBuffer(buf);
+                bedBufCache[bedIdx] = prepared;
+                if(currentBed === bedIdx && bedEnabled) startBedBuffer(prepared);
+                bedLoading = false;
+                return;
+            }
+        }
+        bedLoading = false; // all sources exhausted — silent
+    }
+
+    function changeBed(dir) {
+        currentBed = (currentBed + dir + BED_PRESETS.length) % BED_PRESETS.length;
+        if(bedEnabled) { stopBedSrc(); loadBedRecording(); }
+    }
+
+    function preloadAllBeds() {
+        if(!audioCtx) return;
+        for(let i = 0; i < BED_PRESETS.length; i++) {
+            (async (idx) => {
+                if(bedBufCache[idx]) return;
+                const filenames = await resolveBedFiles(idx);
+                for(const file of filenames) {
+                    const buf = await tryFetchWikiFile(file);
+                    if(buf) { bedBufCache[idx] = prepareBedBuffer(buf); return; }
+                }
+            })(i);
+        }
+    }
+
+    function toggleBed() {
+        if(!audioReady) return;
+        bedEnabled = !bedEnabled;
+        ensureBedGain();
+        if(bedEnabled) {
+            loadBedRecording();
+            const t = audioCtx.currentTime;
+            bedGainNode.gain.cancelScheduledValues(t);
+            bedGainNode.gain.setValueAtTime(bedGainNode.gain.value, t);
+            bedGainNode.gain.linearRampToValueAtTime(0.8, t + 2.5);
+        } else {
+            stopBedSrc();
+            const t = audioCtx.currentTime;
+            bedGainNode.gain.cancelScheduledValues(t);
+            bedGainNode.gain.setValueAtTime(bedGainNode.gain.value, t);
+            bedGainNode.gain.linearRampToValueAtTime(0, t + 1.5);
+        }
+    }
+
+
+        function drawKeyboardGrid(ky) {
+        ctx.save();
+        ctx.strokeStyle='rgba(90,40,50,0.38)';
+        ctx.lineWidth=1;
+        const gridStep = 20;
+        for(let y=ky; y<H; y+=gridStep) {
+            ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(W,y); ctx.stroke();
+        }
+        for(let x=0; x<W; x+=gridStep) {
+            ctx.beginPath(); ctx.moveTo(x,ky); ctx.lineTo(x,H); ctx.stroke();
+        }
+        ctx.restore();
+    }
+
+    function drawUIPanelBorder() {
+        // Glowing neon separator between the landscape and the input panel — drawn for both tabs
+        ctx.save();
+        const lineY = sceneH;
+        // Soft wide glow beneath the line
+        const glowG = ctx.createLinearGradient(0, lineY - 6, 0, lineY + 10);
+        glowG.addColorStop(0,   'rgba(0,0,0,0)');
+        glowG.addColorStop(0.35,'rgba(220,20,90,0.12)');
+        glowG.addColorStop(0.65,'rgba(220,20,90,0.35)');
+        glowG.addColorStop(1,   'rgba(0,0,0,0)');
+        ctx.fillStyle = glowG;
+        ctx.fillRect(0, lineY - 6, W, 16);
+        // Core crimson line
+        ctx.strokeStyle = '#c8104e';
+        ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.moveTo(0, lineY); ctx.lineTo(W, lineY); ctx.stroke();
+        // Bright inner highlight
+        ctx.strokeStyle = 'rgba(255,160,200,0.55)';
+        ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(0, lineY); ctx.lineTo(W, lineY); ctx.stroke();
+        ctx.restore();
+    }
+
+    function drawKeyboard() {
+        // Only draw keyboard if in sound tab
+        if(currentTab === 'sound') {
+            const ky=H-KEYBOARD_HEIGHT;
+
+            ctx.fillStyle='#08080f';
+            ctx.fillRect(0,ky,W,KEYBOARD_HEIGHT);
+
+            drawKeyboardGrid(ky);
+
+            // White keys
+            for(const n of whites){
+                const g=ctx.createLinearGradient(0,n.y,0,n.y+n.h);
+                if(n.pressed){g.addColorStop(0,'#2a1510');g.addColorStop(1,'#180a08');}
+                else{g.addColorStop(0,'#252e42');g.addColorStop(1,'#182030');}
+                ctx.fillStyle=g; rrect(n.x,n.y,n.w,n.h,0,0,5,5); ctx.fill();
+                ctx.strokeStyle=n.pressed?'rgba(255,69,0,0.6)':'rgba(140,70,80,0.65)'; ctx.lineWidth=0.8;
+                rrect(n.x,n.y,n.w,n.h,0,0,5,5); ctx.stroke();
+                if(n.pressed){
+                    ctx.strokeStyle='rgba(255,69,0,0.7)'; ctx.lineWidth=2;
+                    rrect(n.x,n.y,n.w,n.h,0,0,5,5); ctx.stroke();
+                }
+            }
+            // Black keys
+            for(const n of blacks){
+                if(n.x===undefined) continue;
+                const g=ctx.createLinearGradient(0,n.y,0,n.y+n.h);
+                if(n.pressed){g.addColorStop(0,'#201008');g.addColorStop(1,'#100804');}
+                else{g.addColorStop(0,'#060810');g.addColorStop(1,'#030508');}
+                ctx.fillStyle=g; rrect(n.x,n.y,n.w,n.h,0,0,4,4); ctx.fill();
+                ctx.strokeStyle='rgba(0,0,0,0.8)'; ctx.lineWidth=1;
+                rrect(n.x,n.y,n.w,n.h,0,0,4,4); ctx.stroke();
+                if(n.pressed){
+                    ctx.strokeStyle='rgba(255,69,0,0.7)'; ctx.lineWidth=2;
+                    rrect(n.x,n.y,n.w,n.h,0,0,4,4); ctx.stroke();
+                }
+            }
+
+            // Chord buttons — synthwave colors
+            ctx.font='16px '+FONT; ctx.textAlign='center'; ctx.textBaseline='middle';
+            const nCh = chords.length;
+            for(let ci = 0; ci < nCh; ci++){
+                const ch = chords[ci];
+                const active = ch.pressed;
+                // Cascade flash: each button peaks at a different time (left → right sweep)
+                let cascadeFlash = 0;
+                if(chordCascadeT >= 0) {
+                    const t = Math.max(0, Math.min(1, chordCascadeT * (nCh + 1) - ci));
+                    cascadeFlash = 1 - Math.abs(t * 2 - 1);  // triangle, peaks at t=0.5
+                }
+                ctx.fillStyle=active?'#1a0c08':'#0c0808';
+                rrect(ch.x,ch.y,ch.w,ch.h,6,6,6,6); ctx.fill();
+                // Cascade glow layer (screen blend over the base fill)
+                if(cascadeFlash > 0) {
+                    ctx.save();
+                    ctx.globalCompositeOperation = 'screen';
+                    ctx.globalAlpha = cascadeFlash * 0.65;
+                    ctx.fillStyle = `hsla(${pivotHue},80%,55%,1)`;
+                    rrect(ch.x,ch.y,ch.w,ch.h,6,6,6,6); ctx.fill();
+                    ctx.restore();
+                }
+                ctx.strokeStyle=active?SW.orange
+                    : cascadeFlash > 0 ? `hsla(${pivotHue},70%,55%,${0.3 + cascadeFlash * 0.7})`
+                    : 'rgba(139,0,32,0.3)';
+                ctx.lineWidth=active||cascadeFlash>0 ? 2 : 1;
+                rrect(ch.x,ch.y,ch.w,ch.h,6,6,6,6); ctx.stroke();
+                ctx.fillStyle=active?SW.amber
+                    : cascadeFlash > 0 ? `hsla(${pivotHue},90%,75%,${0.5 + cascadeFlash * 0.5})`
+                    : SW.crimson;
+                ctx.fillText(ch.name,ch.x+ch.w/2,ch.y+ch.h/2);
+            }
+
+            // ── Pivot key-change row ──────────────────────────────────────────
+            if(pivotSuggestions.length > 0) {
+                ctx.textAlign='center'; ctx.textBaseline='middle';
+                for(const pv of pivotSuggestions) {
+                    const active = pv.pressed;
+                    // Dark teal-tinted background
+                    ctx.fillStyle = active ? '#0a1418' : '#060c10';
+                    rrect(pv.x, pv.y, pv.w, pv.h, 4, 4, 4, 4); ctx.fill();
+                    // Teal/cyan border — distinct from warm chord row
+                    const borderAlpha = active ? 1.0 : 0.45;
+                    ctx.strokeStyle = active
+                        ? `hsla(${pv.hue},80%,60%,1)`
+                        : `hsla(${pv.hue},60%,50%,${borderAlpha})`;
+                    ctx.lineWidth = active ? 2 : 1;
+                    rrect(pv.x, pv.y, pv.w, pv.h, 4, 4, 4, 4); ctx.stroke();
+                    // Key name (larger) + mode abbrev (smaller) — two lines
+                    const [keyPart, modePart] = pv.label.split(' ');
+                    const midX = pv.x + pv.w / 2;
+                    ctx.fillStyle = active
+                        ? `hsla(${pv.hue},90%,72%,1)`
+                        : `hsla(${pv.hue},70%,60%,0.9)`;
+                    ctx.font = `bold 14px ${FONT}`;
+                    ctx.fillText(keyPart,  midX, pv.y + pv.h * 0.36);
+                    ctx.font = `10px ${FONT}`;
+                    ctx.fillStyle = active
+                        ? `hsla(${pv.hue},70%,60%,1)`
+                        : `hsla(${pv.hue},50%,50%,0.7)`;
+                    ctx.fillText(modePart, midX, pv.y + pv.h * 0.72);
+                }
+            } else {
+                // Placeholder hint when no chord has been pressed yet
+                const pvY = layoutPivotY + PIVOT_BTN_H / 2;
+                ctx.font = `11px ${FONT}`;
+                ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+                ctx.fillStyle = 'rgba(0,180,180,0.25)';
+                ctx.fillText('← play a chord for key-change suggestions', layoutStartX + layoutKbW / 2, pvY);
+            }
+
+            drawKeySelector();
+            drawModeSelector();
+            drawOctaveToggle();
+            drawSoundSelector();
+            drawBedSelector();
+
+            // Auto-melody button
+            if(autoMelBounds.w > 0) {
+                const ab = autoMelBounds;
+                const on = autoMelody;
+                ctx.save();
+                ctx.fillStyle = on ? '#081a06' : '#08080f';
+                rrect(ab.x, ab.y, ab.w, ab.h, 5,5,5,5); ctx.fill();
+                ctx.strokeStyle = on ? 'rgba(80,220,80,0.9)' : 'rgba(80,220,80,0.22)';
+                ctx.lineWidth = on ? 2 : 1;
+                rrect(ab.x, ab.y, ab.w, ab.h, 5,5,5,5); ctx.stroke();
+                if(on) {
+                    // Soft green inner glow
+                    ctx.globalCompositeOperation = 'screen';
+                    ctx.globalAlpha = 0.18;
+                    ctx.fillStyle = '#40e040';
+                    rrect(ab.x+2, ab.y+2, ab.w-4, ab.h-4, 4,4,4,4); ctx.fill();
+                    ctx.globalCompositeOperation = 'source-over';
+                    ctx.globalAlpha = 1;
+                    // Pulsing dot
+                    const pulse = 0.5 + 0.5 * Math.sin(globalTime * 2.8);
+                    ctx.globalAlpha = 0.5 + pulse * 0.5;
+                    ctx.fillStyle = '#60ff60';
+                    ctx.beginPath();
+                    ctx.arc(ab.x + ab.w/2, ab.y + ab.h * 0.72, 3.5, 0, Math.PI*2);
+                    ctx.fill();
+                    ctx.globalAlpha = 1;
+                }
+                ctx.fillStyle = on ? '#80ff80' : 'rgba(80,220,80,0.45)';
+                ctx.font = `bold 15px ${FONT}`;
+                ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+                ctx.fillText('AUTO', ab.x + ab.w/2, ab.y + ab.h * (on ? 0.38 : 0.5));
+                if(!on) {
+                    ctx.fillStyle = 'rgba(80,180,80,0.28)';
+                    ctx.font = `10px ${FONT}`;
+                    ctx.fillText('melody', ab.x + ab.w/2, ab.y + ab.h * 0.68);
+                }
+                ctx.restore();
+            }
+            drawUIPanelBorder(); // neon separator — drawn after all content so it's crisp on top
+            drawTabStrip(); // drawn last so it floats on top of keys
+        } else {
+            // Background, then drum sequencer content
+            ctx.fillStyle='#08080f';
+            ctx.fillRect(0, sceneH, W, KEYBOARD_HEIGHT);
+            drawDrumSequencer();
+            drawUIPanelBorder(); // neon separator — drawn after sequencer so it's crisp on top
+            drawTabStrip(); // drawn last so it floats on top of sequencer
+        }
+    }
+
+    // ─── Scene Mirror ───────────────────────────────────────────────────────
+    // Captures the left half of the canvas (physical pixels) into mirrorBuf,
+    // then flips it onto the right half.  Call AFTER terrain, BEFORE orbs.
+    function mirrorSceneHalf() {
+        if(!mirrorBuf) return;
+        const dpr       = window.devicePixelRatio || 1;
+        const halfPhys  = Math.round(W / 2 * dpr);
+        const scenePhys = Math.round(sceneH * dpr);
+        const tc = mirrorBuf.getContext('2d');
+        tc.clearRect(0, 0, mirrorBuf.width, mirrorBuf.height);
+        tc.drawImage(canvas, 0, 0, halfPhys, scenePhys, 0, 0, halfPhys, scenePhys);
+        const fullPhys = Math.round(W * dpr);
+        ctx.save();
+        ctx.setTransform(1, 0, 0, 1, 0, 0);   // reset to physical-pixel space
+        ctx.translate(fullPhys, 0);
+        ctx.scale(-1, 1);
+        ctx.drawImage(mirrorBuf, 0, 0);
+        ctx.restore();
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0); // restore logical-pixel transform
+    }
+
+    // ─── Bass hit flourish ───────────────────────────────────────────────────
+    function drawBassFlourish() {
+        if(bassFlashT <= 0) return;
+        const e = bassFlashT * bassFlashT * (3 - 2 * bassFlashT); // smoothstep 1→0
+
+        ctx.save();
+        ctx.globalCompositeOperation = 'screen';
+
+        // Expanding shockwave ring
+        const ringR = (1 - e) * 130 + 15;
+        ctx.strokeStyle = hsl(bassFlashHue, 100, 82);
+        ctx.lineWidth   = 4 * e + 1;
+        ctx.globalAlpha = e * 0.88;
+        ctx.beginPath(); ctx.arc(bassFlashX, bassFlashY, ringR, 0, Math.PI * 2); ctx.stroke();
+
+        // Softer trailing ring at 65% radius
+        ctx.strokeStyle = hsl(bassFlashHue, 70, 70);
+        ctx.lineWidth   = 2;
+        ctx.globalAlpha = e * e * 0.5;
+        ctx.beginPath(); ctx.arc(bassFlashX, bassFlashY, ringR * 0.65, 0, Math.PI * 2); ctx.stroke();
+
+        // 8 radial streaks shooting outward
+        ctx.strokeStyle = hsl(bassFlashHue, 100, 92);
+        ctx.lineWidth   = 1.5;
+        const streakLen = (1 - e) * 95;
+        const inner     = 14;
+        for(let k = 0; k < 8; k++) {
+            const ang = k / 8 * Math.PI * 2;
+            ctx.globalAlpha = e * 0.82;
+            ctx.beginPath();
+            ctx.moveTo(bassFlashX + Math.cos(ang) * inner,
+                       bassFlashY + Math.sin(ang) * inner);
+            ctx.lineTo(bassFlashX + Math.cos(ang) * (inner + streakLen),
+                       bassFlashY + Math.sin(ang) * (inner + streakLen));
+            ctx.stroke();
+        }
+
+        ctx.restore();
+    }
+
+    // ─── Main Render ───
+    function render() {
+        ctx.clearRect(0,0,W,H);
+
+        drawBackground();
+        drawGeometricShapes();
+        drawMountains();
+        drawStarfield();
+        drawDataStreams();
+
+        // Neon terrain layers
+        drawNeonGrid(0, 350, 0.3, 1.0);
+        drawNeonGrid(1, 20,  0.6, 1.5);
+        drawNeonGrid(2, 335, 1.0, 2.0);
+
+        // Mirror the scene (background + terrain) before drawing orbs
+        mirrorSceneHalf();
+
+        // Draw orbs at real positions, then again mirrored — so every orb
+        // appears symmetrically from spawn regardless of x position.
+        drawOrbs();
+        ctx.save();
+        ctx.translate(W, 0);
+        ctx.scale(-1, 1);
+        drawOrbs();
+        ctx.restore();
+
+        drawBassFlourish();
+        drawScanLines();
+
+        // Deep purple vignette
+        const vg=ctx.createRadialGradient(W/2,sceneH*0.45,sceneH*0.3,W/2,sceneH*0.45,W*0.75);
+        vg.addColorStop(0,'rgba(0,0,0,0)');
+        vg.addColorStop(0.7,'rgba(0,0,0,0)');
+        vg.addColorStop(1,'rgba(12,4,8,0.45)');
+        ctx.fillStyle=vg; ctx.fillRect(0,0,W,sceneH);
+
+        drawKeyboard();
+    }
+
+    // ─── Loop ───
+    function frame(t) {
+        const dt=Math.min((t-lastT)/1000,0.05);
+        lastT=t; update(dt); render();
+        requestAnimationFrame(frame);
+    }
+
+    // ─── Input ───
+    function noteAt(x,y) {
+        for(const n of blacks){if(n.x===undefined)continue;if(x>=n.x&&x<=n.x+n.w&&y>=n.y&&y<=n.y+n.h)return n;}
+        for(const n of whites){if(x>=n.x&&x<=n.x+n.w&&y>=n.y&&y<=n.y+n.h)return n;}
+        return null;
+    }
+    function chordAt(x,y) {
+        for(const ch of chords){if(x>=ch.x&&x<=ch.x+ch.w&&y>=ch.y&&y<=ch.y+ch.h)return ch;}
+        return null;
+    }
+    function pivotAt(x,y) {
+        for(const pv of pivotSuggestions){if(x>=pv.x&&x<=pv.x+pv.w&&y>=pv.y&&y<=pv.y+pv.h)return pv;}
+        return null;
+    }
+    function spinnerHit(bounds, x, y) {
+        const {x:bx,y:by,w,h} = bounds;
+        if(x<bx||x>bx+w||y<by||y>by+h) return null;
+        if(y < by+h*0.38) return 'up';
+        if(y > by+h*0.62) return 'down';
+        return 'middle';
+    }
+
+    function changeKey(dir) {
+        currentKey = (currentKey + dir + 12) % 12;
+        generateChords(currentKey);
+        pivotSuggestions = [];   // clear until user presses a chord in the new key
+        layout();
+    }
+
+    function changeMode(dir) {
+        currentMode = (currentMode + dir + MODES.length) % MODES.length;
+        generateChords(currentKey);
+        pivotSuggestions = [];
+        layout();
+    }
+
+    function changeOctave(dir) {
+        currentOctave = Math.max(-2, Math.min(2, currentOctave + dir));
+    }
+
+    function changePreset(dir) {
+        currentPreset = (currentPreset + dir + SOUND_PRESETS.length) % SOUND_PRESETS.length;
+        if(audioReady) {
+            const p = SOUND_PRESETS[currentPreset];
+            const t = audioCtx.currentTime;
+            dryBus.gain.setTargetAtTime(p.dry, t, 0.4);
+            wetBus.gain.setTargetAtTime(p.wet, t, 0.4);
+        }
+    }
+
+
+
+    // ════════════════════════════════════════
+    //  AUTO-PLAY HELPERS
+    // ════════════════════════════════════════
+
+    // Weighted harmonic movement — biased toward resolution and diatonic neighbors
+    function autoNextChord() {
+        const moves = {
+            0: [0, 0, 3, 4, 5, 7, 0],   // I   → stay, IV, V, vi, add9
+            1: [0, 4, 0],                // ii  → I, V
+            2: [3, 5, 0],                // iii → IV, vi, I
+            3: [0, 0, 4, 5, 3],          // IV  → I, V, vi, stay
+            4: [0, 0, 3, 5],             // V   → I, IV, vi
+            5: [0, 3, 4, 0],             // vi  → I, IV, V
+            6: [0, 4],                   // viø → I, V
+            7: [0, 5, 3, 0],             // add9→ I, vi, IV
+        };
+        const row  = moves[autoMelChord] || [0];
+        const opts = row.filter(i => i < chords.length);
+        return opts[Math.floor(Math.random() * opts.length)];
+    }
+
+    // Generate a fresh, minimal ambient drum pattern
+    function generateAutoDrumPattern() {
+        for(let r = 0; r < 5; r++) drumPattern[r].fill(false);
+
+        // KICK — beat 1 always; beat 3 often; occasional push on step 28
+        drumPattern[0][0]  = true;
+        if(Math.random() < 0.60) drumPattern[0][16] = true;
+        if(Math.random() < 0.20) drumPattern[0][28] = true;
+
+        // C-HH — sparse quarter/eighth note groove
+        for(let s = 0; s < 32; s += 4) {
+            if(Math.random() < 0.62) drumPattern[1][s] = true;
+        }
+        // Occasional single 16th-note fill in one bar quarter
+        if(Math.random() < 0.28) {
+            const g = Math.floor(Math.random() * 4) * 8;
+            drumPattern[1][g + 2] = true;
+        }
+
+        // O-HH — very sparse open hats on off-beats
+        for(let s = 4; s < 32; s += 8) {
+            if(Math.random() < 0.25) drumPattern[2][s] = true;
+        }
+
+        // SNARE — tasteful beat 2 and/or 4, optional ghost
+        if(Math.random() < 0.60) drumPattern[3][8]  = true;
+        if(Math.random() < 0.50) drumPattern[3][24] = true;
+        if(Math.random() < 0.16) drumPattern[3][12] = true; // ghost
+
+        // RIM — very sparse accent, one or two hits max
+        const rimCandidates = [4, 6, 12, 20, 26, 30];
+        for(const s of rimCandidates) {
+            if(Math.random() < 0.13) { drumPattern[4][s] = true; break; } // at most one
+        }
+    }
+
+    // Subtle variation every 8 bars — flips 2-3 non-kick cells
+    function varyAutoDrumPattern() {
+        const numFlips = 2 + Math.floor(Math.random() * 2);
+        for(let f = 0; f < numFlips; f++) {
+            const row  = 1 + Math.floor(Math.random() * 4); // skip kick
+            const step = Math.floor(Math.random() * 32);
+            drumPattern[row][step] = !drumPattern[row][step];
+        }
+        // Occasionally swap the syncopated kick
+        if(Math.random() < 0.38) drumPattern[0][28] = !drumPattern[0][28];
+        // Small chance to flip beat-3 kick
+        if(Math.random() < 0.22) drumPattern[0][16] = !drumPattern[0][16];
+    }
+
+    // ─── Auto-play schedulers (background-safe: use setTimeout / audio clock) ───
+
+    function fireAutoMelodyEvent() {
+        if(!autoMelody || !audioReady) return;
+        let nextDelay;
+        if(Math.random() < 0.72) {
+            // Chord — the main ambient texture
+            if(chords.length > 0) {
+                fireChord(chords[autoMelChord]);
+                autoMelChord = autoNextChord();
+            }
+            nextDelay = (8 + Math.random() * 12) * 1000;  // 8–20 s
+        } else {
+            // Single scale note — a gentle melodic touch
+            const scale    = MODES[currentMode].scale;
+            const degree   = scale[Math.floor(Math.random() * scale.length)];
+            const targetPC = (currentKey + degree) % 12;
+            const candidates = notes.filter(n => notes.indexOf(n) % 12 === targetPC);
+            if(candidates.length > 0)
+                pressNote(candidates[Math.floor(Math.random() * candidates.length)]);
+            nextDelay = (3 + Math.random() * 7) * 1000;   // 3–10 s
+        }
+        autoMelTimeoutId = setTimeout(fireAutoMelodyEvent, nextDelay);
+    }
+
+    function startAutoMelody() {
+        stopAutoMelody();
+        autoMelChord = 0;
+        // First event in 2–5 s
+        autoMelTimeoutId = setTimeout(fireAutoMelodyEvent, (2 + Math.random() * 3) * 1000);
+    }
+
+    function stopAutoMelody() {
+        if(autoMelTimeoutId) { clearTimeout(autoMelTimeoutId); autoMelTimeoutId = null; }
+    }
+
+    // ─── Drum Audio ─────────────────────────────────────────────────────────
+
+    function makeDrumReverb() {
+        const sr  = audioCtx.sampleRate;
+        const len = Math.floor(sr * 2.4); // longer tail for lush room sound
+        const buf = audioCtx.createBuffer(2, len, sr);
+        for(let c=0;c<2;c++){
+            const d = buf.getChannelData(c);
+            for(let i=0;i<len;i++) {
+                // Early reflections (first 50ms) are louder, then smooth exponential decay
+                const t = i / sr;
+                const early = t < 0.05 ? 1.0 + (1 - t/0.05) * 0.6 : 1.0;
+                d[i] = (Math.random()*2-1) * Math.pow(1-i/len, 1.4) * 0.38 * early;
+            }
+        }
+        const conv = audioCtx.createConvolver();
+        conv.buffer = buf;
+        return conv;
+    }
+
+    function initDrumAudio() {
+        if(drumRevNode) return;
+        drumRevNode = makeDrumReverb();
+        drumRevNode.connect(masterBus);
+        drumSCGain = audioCtx.createGain();
+        drumSCGain.gain.value = 1;
+        drumSCGain.connect(masterBus);
+    }
+
+    function applyDrumSidechain(t) {
+        if(!drumSCGain || sidechainAmt < 0.01) return;
+        let duck, rel;
+        if(ottMode) {
+            // OTT: slam everything to near-zero; slow musical release so the pump sweeps up
+            duck = 0.004;
+            rel  = (60 / drumBPM) * 0.68;  // long release = very pronounced breath of the pump
+        } else {
+            // Normal: steeper curve — at 55% knob → ~3%; at max → ~1%
+            duck = Math.pow(1 - sidechainAmt, 5.0) * 0.97 + 0.01;
+            rel  = (60 / drumBPM) * 0.38;
+        }
+        // Duck the non-kick drum bus
+        const sc = drumSCGain.gain;
+        sc.cancelScheduledValues(t);
+        sc.setValueAtTime(1, t);
+        sc.setValueAtTime(duck, t + 0.001);
+        sc.setTargetAtTime(1, t + 0.001, rel / 3);
+        // Also duck the melodic instrument bus for the classic pumping effect
+        if(dryBus) {
+            const origDry = dryBus.gain.value;  // capture current (may vary)
+            const dm = dryBus.gain;
+            dm.cancelScheduledValues(t);
+            dm.setValueAtTime(origDry, t);
+            dm.setValueAtTime(origDry * duck, t + 0.001);
+            dm.setTargetAtTime(origDry, t + 0.001, rel / 3);
+        }
+        if(wetBus) {
+            const origWet = wetBus.gain.value;
+            const wm = wetBus.gain;
+            wm.cancelScheduledValues(t);
+            wm.setValueAtTime(origWet, t);
+            wm.setValueAtTime(origWet * duck, t + 0.001);
+            wm.setTargetAtTime(origWet, t + 0.001, rel / 3);
+        }
+    }
+
+    function drumKick(t) {
+        kickTimes.push(t); // queue for visual bloom — consumed in render loop
+        const osc  = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.connect(gain); gain.connect(masterBus);
+        // Reverb send — lush tail routed directly to masterBus (bypasses sidechain duck)
+        if(drumRevNode) {
+            const revSend  = audioCtx.createGain();
+            revSend.gain.value = 0.82;
+            // 18 ms pre-delay so the dry kick transient punches through first
+            const preDel = audioCtx.createDelay(0.1);
+            preDel.delayTime.value = 0.018;
+            gain.connect(revSend); revSend.connect(preDel); preDel.connect(drumRevNode);
+        }
+        osc.frequency.setValueAtTime(100, t);
+        osc.frequency.exponentialRampToValueAtTime(38, t + 0.22);
+        gain.gain.setValueAtTime(0.42, t);   // reduced from 0.58
+        gain.gain.exponentialRampToValueAtTime(0.001, t + 0.32);
+        osc.start(t); osc.stop(t + 0.36);
+        applyDrumSidechain(t);
+    }
+
+    function drumNoise(t, hpFreq, duration, vol, reverb) {
+        const sr  = audioCtx.sampleRate;
+        const len = Math.floor(sr * (duration + 0.05));
+        const buf = audioCtx.createBuffer(1, len, sr);
+        const d   = buf.getChannelData(0);
+        for(let i=0;i<len;i++) d[i] = Math.random()*2-1;
+        const src  = audioCtx.createBufferSource();
+        src.buffer = buf;
+        const hp   = audioCtx.createBiquadFilter();
+        hp.type = 'highpass'; hp.frequency.value = hpFreq;
+        const gain = audioCtx.createGain();
+        gain.gain.setValueAtTime(vol, t);
+        gain.gain.exponentialRampToValueAtTime(0.001, t + duration);
+        const dest = reverb ? drumRevNode : drumSCGain;
+        src.connect(hp); hp.connect(gain); gain.connect(dest);
+        if(reverb) {
+            // dry path too — slightly louder dry for presence
+            const dry = audioCtx.createGain(); dry.gain.value = 0.45;
+            gain.connect(dry); dry.connect(drumSCGain);
+        }
+        src.start(t);
+    }
+
+    // CHH: short, crisp — add a touch of reverb for air
+    function drumCHH(t)  { chhTimes.push(t); drumNoise(t, 7000, 0.048, 0.26, true); }
+    // OHH: open, washy reverb
+    function drumOHH(t)  { ohhTimes.push(t); drumNoise(t, 5500, 0.28,  0.22, true); }
+    function drumSnare(t){
+        snareTimes.push(t);
+        // noise burst + body tone — generous reverb
+        drumNoise(t, 200, 0.22, 0.42, true);
+        const osc  = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.frequency.value = 185;
+        osc.connect(gain); gain.connect(drumSCGain);
+        gain.gain.setValueAtTime(0.18, t);
+        gain.gain.exponentialRampToValueAtTime(0.001, t+0.12);
+        osc.start(t); osc.stop(t+0.14);
+    }
+    function drumRim(t)  {
+        rimTimes.push(t);
+        drumNoise(t, 1200, 0.065, 0.28, true); // reverb on rim for a roomy click
+        const osc  = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.type = 'triangle'; osc.frequency.value = 900;
+        osc.connect(gain); gain.connect(drumSCGain);
+        gain.gain.setValueAtTime(0.22, t);
+        gain.gain.exponentialRampToValueAtTime(0.001, t+0.04);
+        osc.start(t); osc.stop(t+0.06);
+    }
+
+    const DRUM_FNS = [drumKick, drumCHH, drumOHH, drumSnare, drumRim];
+
+    function drumPlayStep(stepIdx, time) {
+        for(let r=0;r<5;r++) {
+            if(drumPattern[r][stepIdx]) DRUM_FNS[r](time);
+        }
+    }
+
+    const DRUM_LOOKAHEAD_NORMAL = 0.10; // seconds ahead when tab is visible
+    const DRUM_LOOKAHEAD_HIDDEN = 3.0;  // seconds ahead when tab is in background
+    const DRUM_INTERVAL  = 25;   // ms scheduler polling interval
+    let   drumLookahead  = DRUM_LOOKAHEAD_NORMAL;
+
+    function drumStepDur() { return 60 / (drumBPM * 2); } // 8th note duration
+
+    function drumSchedule() {
+        if(!drumPlaying || !audioCtx) return;
+        const now = audioCtx.currentTime;
+        while(drumNextTime < now + drumLookahead) {
+            // 8-bar auto-variation check (runs on audio clock, works in background)
+            if(autoDrum && drumStartTime > 0) {
+                const bar = Math.floor((drumNextTime - drumStartTime) / (drumStepDur() * DRUM_STEPS));
+                if(bar !== autoDrumPrevBar) {
+                    autoDrumPrevBar = bar;
+                    if(bar > 0 && bar % 8 === 0) varyAutoDrumPattern();
+                }
+            }
+            drumPlayStep(drumStep, drumNextTime);
+            drumStep = (drumStep + 1) % DRUM_STEPS;
+            drumNextTime += drumStepDur();
+        }
+    }
+
+    function drumStart() {
+        if(!audioCtx) return;
+        initDrumAudio();
+        drumPlaying   = true;
+        drumStep      = 0;
+        drumNextTime  = audioCtx.currentTime + 0.05;
+        drumStartTime = drumNextTime; // anchor for visual playhead calculation
+        if(drumSchedTimer) clearInterval(drumSchedTimer);
+        drumSchedTimer = setInterval(drumSchedule, DRUM_INTERVAL);
+    }
+
+    function drumStop() {
+        drumPlaying = false;
+        drumStep    = -1;
+        if(drumSchedTimer){ clearInterval(drumSchedTimer); drumSchedTimer=null; }
+    }
+
+    function drumToggle() {
+        if(drumPlaying) drumStop(); else drumStart();
+    }
+
+    // Return the AudioContext time of the next drum step boundary (for SYNC)
+    function nextDrumBoundary() {
+        if(!drumPlaying || !audioCtx) return 0;
+        return drumNextTime;
+    }
+
+    function pressNote(n, chordHue) {
+        if(!n||n.pressed) return;
+        if(syncEnabled && drumPlaying && audioCtx) {
+            // Delay the orb fire until next drum step boundary
+            const now = audioCtx.currentTime;
+            const nextBoundary = nextDrumBoundary();
+            const delayMs = Math.max(0, (nextBoundary - now) * 1000);
+            n.pressed = true;
+            setTimeout(()=>{
+                fireOrb(n, chordHue);
+                setTimeout(()=>{n.pressed=false;}, 180);
+            }, delayMs);
+        } else {
+            n.pressed=true; fireOrb(n, chordHue);
+            setTimeout(()=>{n.pressed=false;},180);
+        }
+    }
+
+    function handleInput(x,y) {
+        // Tab switching — large tabs floating above keyboard panel
+        const tabW=120, tabH=44, tabX=8, tabY=sceneH-tabH;
+        if(y>=tabY && y<=tabY+tabH) {
+            if(x>=tabX        && x<=tabX+tabW)       { currentTab='sound';  return; }
+            if(x>=tabX+tabW+4 && x<=tabX+tabW*2+4)   { currentTab='rhythm'; return; }
+            // First Try portal — navigate to v1
+            const ftW=118, ftX=W-ftW-8;
+            if(x>=ftX && x<=ftX+ftW) { window.location.href='dream-train-v1.html'; return; }
+        }
+        if(currentTab === 'rhythm') {
+            if(!drumBounds.ky) calcDrumBounds();
+            // Play/pause
+            const pb = drumBounds.playBtn;
+            if(x>=pb.x&&x<=pb.x+pb.w&&y>=pb.y&&y<=pb.y+pb.h){
+                if(!audioCtx) initAudio();
+                drumToggle(); return;
+            }
+            // BPM up
+            const bu=drumBounds.bpmUp;
+            if(x>=bu.x&&x<=bu.x+bu.w&&y>=bu.y&&y<=bu.y+bu.h){
+                drumBPM=Math.min(200,drumBPM+1); return;
+            }
+            // BPM down
+            const bd=drumBounds.bpmDown;
+            if(x>=bd.x&&x<=bd.x+bd.w&&y>=bd.y&&y<=bd.y+bd.h){
+                drumBPM=Math.max(40,drumBPM-1); return;
+            }
+            // Sync toggle
+            const sb=drumBounds.syncBtn;
+            if(x>=sb.x&&x<=sb.x+sb.w&&y>=sb.y&&y<=sb.y+sb.h){
+                syncEnabled=!syncEnabled; return;
+            }
+            // Auto-drum button
+            const adb=drumBounds.autoDrumBtn;
+            if(adb&&x>=adb.x&&x<=adb.x+adb.w&&y>=adb.y&&y<=adb.y+adb.h){
+                autoDrum=!autoDrum;
+                if(autoDrum){
+                    generateAutoDrumPattern();
+                    autoDrumPrevBar=-1;
+                    if(!audioCtx) initAudio();
+                    if(!drumPlaying) drumStart();
+                }
+                return;
+            }
+            // OTT / NORMAL toggle
+            const ob=drumBounds.ottBtn;
+            if(ob&&x>=ob.x&&x<=ob.x+ob.w&&y>=ob.y&&y<=ob.y+ob.h){
+                ottMode=!ottMode; return;
+            }
+            // Sidechain knob — start drag
+            const sk=drumBounds.scKnob;
+            if(Math.hypot(x-sk.cx,y-sk.cy)<=sk.r+8){
+                scDragging=true; scDragStartY=y; scDragStartVal=sidechainAmt; return;
+            }
+            // Grid cell toggle
+            for(let r=0;r<5;r++){
+                for(let s=0;s<DRUM_STEPS;s++){
+                    const c=drumBounds.cells[r][s];
+                    if(x>=c.x&&x<=c.x+c.w&&y>=c.y&&y<=c.y+c.h){
+                        drumPattern[r][s]=!drumPattern[r][s]; return;
+                    }
+                }
+            }
+            return; // consume all rhythm-tab touches
+        }
+        // Auto-melody button
+        if(autoMelBounds.w>0){
+            const ab=autoMelBounds;
+            if(x>=ab.x&&x<=ab.x+ab.w&&y>=ab.y&&y<=ab.y+ab.h){
+                autoMelody=!autoMelody;
+                if(autoMelody){
+                    if(!audioCtx) initAudio();
+                    startAutoMelody();
+                } else {
+                    stopAutoMelody();
+                }
+                return;
+            }
+        }
+        const n=noteAt(x,y);
+        if(n){pressNote(n);return;}
+        const ch=chordAt(x,y);
+        if(ch){fireChord(ch);return;}
+        const pv=pivotAt(x,y);
+        if(pv){firePivot(pv);return;}
+        const ks=spinnerHit(keySelBounds,x,y);
+        if(ks==='up')   { changeKey(-1);     return; }
+        if(ks==='down') { changeKey(1);      return; }
+        const ms=spinnerHit(modeSelBounds,x,y);
+        if(ms==='up')   { changeMode(-1);    return; }
+        if(ms==='down') { changeMode(1);     return; }
+        // Octave toggle: left 35% = down, right 35% = up
+        if(octaveBounds.w > 0) {
+            const ob = octaveBounds;
+            if(x>=ob.x && x<=ob.x+ob.w && y>=ob.y && y<=ob.y+ob.h) {
+                if(x < ob.x + ob.w * 0.35)      changeOctave(-1);
+                else if(x > ob.x + ob.w * 0.65) changeOctave(1);
+                return;
+            }
+        }
+        const ss=spinnerHit(soundSelBounds,x,y);
+        if(ss==='up')   { changePreset(-1);  return; }
+        if(ss==='down') { changePreset(1);   return; }
+        // BED selector
+        const bs = spinnerHit(bedBounds, x, y);
+        if(bs === 'up')     { changeBed(-1);  return; }
+        if(bs === 'down')   { changeBed(1);   return; }
+        if(bs === 'middle') { toggleBed();    return; }
+    }
+
+    canvas.addEventListener('mousedown',e=>{
+        const r=canvas.getBoundingClientRect();
+        handleInput(e.clientX-r.left, e.clientY-r.top);
+    });
+    canvas.addEventListener('touchstart',e=>{
+        e.preventDefault();
+        const r=canvas.getBoundingClientRect();
+        for(const t of e.changedTouches) handleInput(t.clientX-r.left, t.clientY-r.top);
+    },{passive:false});
+
+    canvas.addEventListener('mousemove',e=>{
+        if(!scDragging) return;
+        const r=canvas.getBoundingClientRect();
+        const dy = scDragStartY - (e.clientY - r.top);
+        sidechainAmt = Math.max(0, Math.min(1, scDragStartVal + dy/80));
+    });
+    canvas.addEventListener('mouseup',()=>{ scDragging=false; });
+    canvas.addEventListener('touchmove',e=>{
+        if(!scDragging) return;
+        e.preventDefault();
+        const r=canvas.getBoundingClientRect();
+        const dy = scDragStartY - (e.changedTouches[0].clientY - r.top);
+        sidechainAmt = Math.max(0, Math.min(1, scDragStartVal + dy/80));
+    },{passive:false});
+    canvas.addEventListener('touchend',()=>{ scDragging=false; });
+
+    const kmap={'a':0,'w':1,'s':2,'e':3,'d':4,'f':5,'t':6,'g':7,'y':8,'h':9,'u':10,'j':11,
+        'k':12,'o':13,'l':14,'p':15,';':16,"'":17};
+    const held=new Set();
+    document.addEventListener('keydown',e=>{
+        if(e.key===' '){ e.preventDefault(); if(!audioCtx)initAudio(); drumToggle(); return; }
+        if(e.key==='ArrowUp')    { e.preventDefault(); changePreset(-1);  return; }
+        if(e.key==='ArrowDown')  { e.preventDefault(); changePreset(1);   return; }
+        if(e.key==='ArrowLeft')  { e.preventDefault(); changeOctave(-1);  return; }
+        if(e.key==='ArrowRight') { e.preventDefault(); changeOctave(1);   return; }
+        if(e.repeat||held.has(e.key))return;
+        const idx=kmap[e.key.toLowerCase()];
+        if(idx!==undefined&&idx<notes.length){held.add(e.key);pressNote(notes[idx]);}
+    });
+    document.addEventListener('keyup',e=>held.delete(e.key));
+
+    // ─── Start ───
+    overlay.addEventListener('click',()=>{
+        initAudio(); overlay.style.opacity='0';
+        setTimeout(()=>overlay.style.display='none',600);
+        setTimeout(()=>preloadAllBeds(), 800); // pre-cache bed recordings in background
+    });
+    // When the tab goes to background, expand drum lookahead so the scheduler
+    // pre-fills several seconds of steps — surviving Chrome's 1s timer throttling.
+    document.addEventListener('visibilitychange', () => {
+        if(document.hidden) {
+            drumLookahead = DRUM_LOOKAHEAD_HIDDEN;
+            drumSchedule(); // pre-fill immediately before throttling kicks in
+        } else {
+            drumLookahead = DRUM_LOOKAHEAD_NORMAL;
+        }
+    });
+
+    window.addEventListener('resize',layout);
+    layout();
+    lastT=performance.now();
+    requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,1784 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Dream Train</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&display=swap');
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { width: 100%; height: 100%; overflow: hidden; background: #0c0614; }
+canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+#overlay {
+    position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(12,6,20,0.92);
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    color: #ff7b00; font-family: 'Bebas Neue', sans-serif; cursor: pointer; z-index: 10;
+    transition: opacity 0.6s;
+}
+#overlay h1 {
+    font-size: 22vw; line-height: 0.82; margin-bottom: 0.15em;
+    color: #ffb300; letter-spacing: 0.06em; text-transform: uppercase;
+    text-shadow: 0 0 40px #ff4500, 0 0 80px #dc143c, 0 0 120px #8b0020;
+    display: flex; flex-direction: column; align-items: center;
+}
+#overlay p { font-size: 1.1em; opacity: 0.6; color: #ff4500; letter-spacing: 0.1em; }
+#overlay .hint { font-size: 0.9em; opacity: 0.35; margin-top: 1.2em; color: #8b0020; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="overlay">
+    <h1><span>Dream</span><span>Train</span></h1>
+    <p>Click anywhere to initialize</p>
+</div>
+<script>
+(() => {
+    const canvas = document.getElementById('c');
+    const ctx = canvas.getContext('2d');
+    const overlay = document.getElementById('overlay');
+    const FONT = "'Bebas Neue', sans-serif";
+
+    // ─── Config ───
+    const CHORD_BTN_H = 44, CHORD_GAP = 8, BOTTOM_PAD = 10;
+    const WHITE_KEY_W = 46, BLACK_KEY_W = 28;
+    const WHITE_KEY_H = 140, BLACK_KEY_H = 88;
+    const KEYBOARD_HEIGHT = WHITE_KEY_H + CHORD_GAP + CHORD_BTN_H + BOTTOM_PAD;
+    const KEY_SEL_W = 54;
+    const SCROLL_SPEED = 28;
+    const GRAVITY = 160;
+    const BOUNCE_DAMP = 0.6;
+    const MIN_BOUNCE_VEL = 50;
+    const ORB_RADIUS = 11;
+    const MAX_BOUNCES = 14;
+    const MAX_ORBS = 40;
+    const TRAIL_LEN = 32;
+    const SCROLL_MULTS = [0.3, 0.6, 1.0];
+
+    // ─── Synthwave Palette (warm/red-leaning) ───
+    const SW = {
+        hotPink: '#ff1a5e', crimson: '#dc143c', magenta: '#e8115b',
+        orange: '#ff4500', amber: '#ff7b00', yellow: '#ffb300',
+        deepRed: '#8b0020', purple: '#6a1b4d', darkNavy: '#0c0614',
+        deepPurple: '#1a0a1e', gridRed: '#3a1020'
+    };
+    const SHAPE_COLORS = [SW.hotPink, SW.crimson, SW.orange, SW.amber, SW.magenta];
+
+    // ─── 3D Geometry Definitions ───
+    const GEOM = {};
+    GEOM.cube = {
+        verts: [[-1,-1,-1],[1,-1,-1],[1,1,-1],[-1,1,-1],[-1,-1,1],[1,-1,1],[1,1,1],[-1,1,1]],
+        edges: [[0,1],[1,2],[2,3],[3,0],[4,5],[5,6],[6,7],[7,4],[0,4],[1,5],[2,6],[3,7]]
+    };
+    GEOM.octa = {
+        verts: [[0,-1.2,0],[1,0,0],[0,0,1],[-1,0,0],[0,0,-1],[0,1.2,0]],
+        edges: [[0,1],[0,2],[0,3],[0,4],[5,1],[5,2],[5,3],[5,4],[1,2],[2,3],[3,4],[4,1]]
+    };
+    GEOM.tetra = {
+        verts: [[1,1,1],[-1,-1,1],[-1,1,-1],[1,-1,-1]],
+        edges: [[0,1],[0,2],[0,3],[1,2],[1,3],[2,3]]
+    };
+    const phi = (1+Math.sqrt(5))/2;
+    GEOM.icosa = {
+        verts: [[-1,phi,0],[1,phi,0],[-1,-phi,0],[1,-phi,0],[0,-1,phi],[0,1,phi],[0,-1,-phi],[0,1,-phi],[phi,0,-1],[phi,0,1],[-phi,0,-1],[-phi,0,1]],
+        edges: [[0,1],[0,5],[0,7],[0,10],[0,11],[1,5],[1,7],[1,8],[1,9],[2,3],[2,4],[2,6],[2,10],[2,11],[3,4],[3,6],[3,8],[3,9],[4,5],[4,9],[4,11],[5,9],[5,11],[6,7],[6,8],[6,10],[7,8],[7,10],[8,9],[9,5],[10,11]]
+    };
+    for(const v of GEOM.icosa.verts){const l=Math.sqrt(v[0]*v[0]+v[1]*v[1]+v[2]*v[2]);v[0]/=l;v[1]/=l;v[2]/=l;}
+    // Square-base pyramid
+    GEOM.pyramid = {
+        verts: [[0,-1.5,0],[1,0.7,-1],[1,0.7,1],[-1,0.7,1],[-1,0.7,-1]],
+        edges: [[0,1],[0,2],[0,3],[0,4],[1,2],[2,3],[3,4],[4,1]]
+    };
+    // Triangular prism
+    GEOM.prism = {
+        verts: [[-1,0.9,0],[0.5,0.9,0.87],[0.5,0.9,-0.87],[-1,-0.9,0],[0.5,-0.9,0.87],[0.5,-0.9,-0.87]],
+        edges: [[0,1],[1,2],[2,0],[3,4],[4,5],[5,3],[0,3],[1,4],[2,5]]
+    };
+    // Elongated bipyramid / gemstone
+    GEOM.gem = {
+        verts: [[0,-1.9,0],[1.1,0,0],[0,0,1.1],[-1.1,0,0],[0,0,-1.1],[0,1.9,0]],
+        edges: [[0,1],[0,2],[0,3],[0,4],[1,2],[2,3],[3,4],[4,1],[5,1],[5,2],[5,3],[5,4]]
+    };
+    // Hexagonal ring / torus proxy
+    GEOM.ring = {
+        verts: [
+            [1.2,-0.3,0],[0.6,-0.3,1.04],[-0.6,-0.3,1.04],[-1.2,-0.3,0],[-0.6,-0.3,-1.04],[0.6,-0.3,-1.04],
+            [1.2,0.3,0],[0.6,0.3,1.04],[-0.6,0.3,1.04],[-1.2,0.3,0],[-0.6,0.3,-1.04],[0.6,0.3,-1.04]
+        ],
+        edges: [[0,1],[1,2],[2,3],[3,4],[4,5],[5,0],[6,7],[7,8],[8,9],[9,10],[10,11],[11,6],[0,6],[1,7],[2,8],[3,9],[4,10],[5,11]]
+    };
+    // Wireframe globe — latitude rings + meridian circles for a proper grid sphere
+    GEOM.sphere = (() => {
+        const verts = [], edges = [], n = 16;
+        let vi = 0;
+        // 5 latitude rings: y = -0.85, -0.5, 0 (equator), +0.5, +0.85
+        for(const y of [-0.85, -0.5, 0, 0.5, 0.85]) {
+            const r = Math.sqrt(Math.max(0, 1 - y*y));
+            const base = vi;
+            for(let i = 0; i < n; i++) {
+                const a = i/n * Math.PI * 2;
+                verts.push([r*Math.cos(a), y, r*Math.sin(a)]);
+                edges.push([base+i, base+(i+1)%n]);
+                vi++;
+            }
+        }
+        // 4 meridian great circles at 0°, 45°, 90°, 135°
+        for(const theta of [0, Math.PI/4, Math.PI/2, 3*Math.PI/4]) {
+            const base = vi;
+            const ct = Math.cos(theta), st = Math.sin(theta);
+            for(let i = 0; i < n; i++) {
+                const phi = i/n * Math.PI * 2;
+                const cp = Math.cos(phi);
+                verts.push([cp*ct, Math.sin(phi), cp*st]);
+                edges.push([base+i, base+(i+1)%n]);
+                vi++;
+            }
+        }
+        return {verts, edges};
+    })();
+    // Prism factory — n-sided prism with given half-height
+    function makePrism(n, h, angleOffset) {
+        const verts = [], edges = [];
+        for(let i = 0; i < n; i++) {
+            const a = i/n * Math.PI * 2 + (angleOffset||0);
+            verts.push([Math.cos(a), -h, Math.sin(a)]);
+            verts.push([Math.cos(a),  h, Math.sin(a)]);
+            edges.push([i*2, ((i+1)%n)*2]);
+            edges.push([i*2+1, ((i+1)%n)*2+1]);
+            edges.push([i*2, i*2+1]);
+        }
+        return {verts, edges};
+    }
+    GEOM.hexprism  = makePrism(6,  1.6);           // tall hexagonal column
+    GEOM.pentprism = makePrism(5,  1.5, -Math.PI/2);
+    GEOM.octprism  = makePrism(8,  1.4);            // wide octagonal column
+    GEOM.cyl12     = makePrism(12, 1.8);            // 12-sided — reads as smooth cylinder
+    GEOM.drum      = makePrism(14, 0.65, 0);        // 14-sided wide & squat drum
+    // Wide flat diamond (squashed bipyramid)
+    GEOM.flatgem = {
+        verts: [[0,-0.65,0],[1.4,0,0],[0,0,1.4],[-1.4,0,0],[0,0,-1.4],[0,0.65,0]],
+        edges: [[0,1],[0,2],[0,3],[0,4],[1,2],[2,3],[3,4],[4,1],[5,1],[5,2],[5,3],[5,4]]
+    };
+    // Tall needle diamond
+    GEOM.tallgem = {
+        verts: [[0,-2.4,0],[0.55,0,0],[0,0,0.55],[-0.55,0,0],[0,0,-0.55],[0,2.4,0]],
+        edges: [[0,1],[0,2],[0,3],[0,4],[1,2],[2,3],[3,4],[4,1],[5,1],[5,2],[5,3],[5,4]]
+    };
+    // Octagonal bipyramid — 8-sided diamond, many facets
+    GEOM.octdiamond = (() => {
+        const verts = [[0,-1.9,0]], edges = [], n = 8;
+        for(let i = 0; i < n; i++) verts.push([Math.cos(i/n*Math.PI*2), 0, Math.sin(i/n*Math.PI*2)]);
+        verts.push([0, 1.9, 0]);
+        for(let i = 0; i < n; i++) {
+            edges.push([0, i+1]);
+            edges.push([n+1, i+1]);
+            edges.push([i+1, (i+1)%n+1]);
+        }
+        return {verts, edges};
+    })();
+    const GEOM_TYPES = ['cube','octa','tetra','icosa','pyramid','prism','gem','ring','sphere',
+                        'hexprism','pentprism','octprism','cyl12','drum','flatgem','tallgem','octdiamond'];
+
+    // ─── State ───
+    let W, H, sceneH;
+    let scrl = 0, lastT = 0, globalTime = 0;
+    let audioCtx, dryBus, reverbNode, wetBus, masterBus;
+    let audioReady = false;
+    const orbs = [], geoShapes = [], farShapes = [], dataStreams = [], stars = [];
+    let nextGeoX = 300, nextStreamX = 0, nextFarX = 60;
+    let starsInited = false;
+    let scanlineCanvas = null;
+
+    // ─── Notes (chromatic C3–C5) ───
+    const NOTE_NAMES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+    const BLACK_IDX = new Set([1,3,6,8,10]);
+    const notes = [];
+    for (let oct = 3; oct <= 4; oct++) {
+        for (let i = 0; i < 12; i++) {
+            const midi = oct*12+i+12;
+            notes.push({
+                name: NOTE_NAMES[i]+oct, freq: 440*Math.pow(2,(midi-69)/12),
+                isBlack: BLACK_IDX.has(i), hue: [0,18,30,45,185,200,270,295,310,325,340,355][i], pressed: false
+            });
+        }
+    }
+    notes.push({ name:'C5', freq:440*Math.pow(2,(72-69)/12), isBlack:false, hue:0, pressed:false });
+    const whites = notes.filter(n=>!n.isBlack);
+    const blacks = notes.filter(n=>n.isBlack);
+
+    // ─── Key / Mode selector state ───
+    let currentKey  = 0;
+    let currentMode = 0;
+    let currentPreset = 0;
+    let keySelBounds  = { x:0, y:0, w:0, h:0 };
+    let modeSelBounds = { x:0, y:0, w:0, h:0 };
+    let soundSelBounds= { x:0, y:0, w:0, h:0 };
+
+    // ─── Musical modes ───
+    const CHORD_INTERVALS = {
+        'maj7': [0,4,7,11], 'm7': [0,3,7,10], '7': [0,4,7,10], 'm7b5': [0,3,6,10], 'add9': [0,4,7,14]
+    };
+    const MODES = [
+        { name:'Ionian',     short:'ION', scale:[0,2,4,5,7,9,11], quals:['maj7','m7','m7','maj7','7','m7','m7b5'] },
+        { name:'Dorian',     short:'DOR', scale:[0,2,3,5,7,9,10], quals:['m7','m7','maj7','7','m7','m7b5','maj7'] },
+        { name:'Phrygian',   short:'PHR', scale:[0,1,3,5,7,8,10], quals:['m7','maj7','7','m7','m7b5','maj7','m7'] },
+        { name:'Lydian',     short:'LYD', scale:[0,2,4,6,7,9,11], quals:['maj7','7','m7','m7b5','maj7','m7','m7'] },
+        { name:'Mixolydian', short:'MIX', scale:[0,2,4,5,7,9,10], quals:['7','m7','m7b5','maj7','m7','m7','maj7'] },
+        { name:'Aeolian',    short:'AEO', scale:[0,2,3,5,7,8,10], quals:['m7','m7b5','maj7','m7','m7','maj7','7'] },
+        { name:'Locrian',    short:'LOC', scale:[0,1,3,5,6,8,10], quals:['m7b5','maj7','m7','m7','maj7','7','m7'] },
+    ];
+
+    // ─── Sound presets ───
+    const SOUND_PRESETS = [
+        { name:'DRIFT',  color:SW.amber,    orbShape:'circle',
+          oscs:[{type:'sine',fm:1,dc:0},{type:'triangle',fm:1,dc:3},{type:'sine',fm:1,dc:-1},{type:'sine',fm:0.5,dc:0}],
+          ft:'lowpass',  fMult:4,   fMax:3500, fQ:0.6, atk:1.5, vol:0.045,
+          tt:'bandpass', tMult:2,   tQ:1.5, tVol:0.008, dry:0.20, wet:0.80 },
+        { name:'VOID',   color:SW.deepRed,  orbShape:'octagon',
+          oscs:[{type:'sine',fm:1,dc:0},{type:'sine',fm:0.999,dc:-2},{type:'sine',fm:0.5,dc:0},{type:'sine',fm:0.25,dc:0}],
+          ft:'lowpass',  fMult:1.5, fMax:900,  fQ:0.3, atk:3.0, vol:0.055,
+          tt:'lowpass',  tMult:0.5, tQ:0.8, tVol:0.004, dry:0.10, wet:0.90 },
+        { name:'PULSE',  color:SW.orange,   orbShape:'square',
+          oscs:[{type:'square',fm:1,dc:0},{type:'sawtooth',fm:1,dc:2},{type:'square',fm:0.5,dc:0},{type:'triangle',fm:2,dc:0}],
+          ft:'lowpass',  fMult:6,   fMax:5000, fQ:1.2, atk:0.4, vol:0.040,
+          tt:'highpass', tMult:4,   tQ:3.0, tVol:0.012, dry:0.35, wet:0.65 },
+        { name:'VAPOR',  color:SW.hotPink,  orbShape:'chevron',
+          oscs:[{type:'sine',fm:1,dc:0},{type:'sine',fm:1,dc:15},{type:'sine',fm:1,dc:-12},{type:'sine',fm:1,dc:7}],
+          ft:'lowpass',  fMult:3,   fMax:3000, fQ:0.5, atk:2.0, vol:0.050,
+          tt:'bandpass', tMult:1.5, tQ:2.0, tVol:0.006, dry:0.15, wet:0.85 },
+        { name:'GLITCH', color:SW.magenta,  orbShape:'triangle',
+          oscs:[{type:'square',fm:1,dc:0},{type:'square',fm:2,dc:0},{type:'sawtooth',fm:1,dc:5},{type:'triangle',fm:3,dc:-3}],
+          ft:'bandpass', fMult:2.5, fMax:6000, fQ:3.0, atk:0.1, vol:0.035,
+          tt:'bandpass', tMult:3,   tQ:5.0, tVol:0.015, dry:0.40, wet:0.60 },
+    ];
+
+    let chords = [];
+
+    function generateChords(keyRoot) {
+        const mode = MODES[currentMode];
+        chords = [];
+        function voiceChord(rootPC, intervals) {
+            const noteIdx = [];
+            for (const iv of intervals) {
+                let idx = rootPC + iv;
+                while (idx > 24) idx -= 12;
+                while (idx < 0)  idx += 12;
+                if (idx >= 0 && idx <= 24 && noteIdx.indexOf(idx) === -1) noteIdx.push(idx);
+            }
+            return noteIdx;
+        }
+        // 8 chords use synthwave palette hues — warm reds/oranges/ambers, cyan, purples, pinks
+        const CHORD_HUES = [0, 18, 35, 185, 270, 300, 325, 345];
+        for (let deg = 0; deg < 7; deg++) {
+            const chordRootPC = (keyRoot + mode.scale[deg]) % 12;
+            const qual = mode.quals[deg];
+            const noteIdx = voiceChord(chordRootPC, CHORD_INTERVALS[qual]);
+            const rootName = NOTE_NAMES[chordRootPC];
+            const dispQual = qual==='m7b5' ? 'ø7' : qual;
+            chords.push({ name: rootName + dispQual, noteIdx, pressed: false, hue: CHORD_HUES[deg] });
+        }
+        const add9Idx = voiceChord(keyRoot % 12, CHORD_INTERVALS['add9']);
+        chords.push({ name: NOTE_NAMES[keyRoot % 12] + 'add9', noteIdx: add9Idx, pressed: false, hue: CHORD_HUES[7] });
+    }
+    generateChords(0);
+
+    // ─── Seeded random ───
+    function sr(s) { let x = Math.sin(s*12.9898+78.233)*43758.5453; return x-Math.floor(x); }
+
+    // ─── HSL helper ───
+    function hsl(h,s,l,a) {
+        return a===undefined ? `hsl(${h%360},${s}%,${l}%)` : `hsla(${h%360},${s}%,${l}%,${a})`;
+    }
+
+    // ─── Layout ───
+    function layout() {
+        const dpr = window.devicePixelRatio || 1;
+        W = window.innerWidth; H = window.innerHeight;
+        canvas.width = W*dpr; canvas.height = H*dpr;
+        canvas.style.width = W+'px'; canvas.style.height = H+'px';
+        ctx.setTransform(dpr,0,0,dpr,0,0);
+        sceneH = H - KEYBOARD_HEIGHT;
+
+        const kbW = whites.length * WHITE_KEY_W;
+        const startX = (W - kbW) / 2;
+        const ky = H - KEYBOARD_HEIGHT;
+        let wi = 0;
+        for (const n of notes) {
+            if (!n.isBlack) { n.x=startX+wi*WHITE_KEY_W; n.y=ky; n.w=WHITE_KEY_W-2; n.h=WHITE_KEY_H; n.cx=n.x+n.w/2; wi++; }
+        }
+        for (const n of notes) {
+            if (n.isBlack) { const idx=notes.indexOf(n); const prev=notes.slice(0,idx).filter(m=>!m.isBlack).pop(); if(prev){ n.x=prev.x+prev.w-BLACK_KEY_W/2+1; n.y=ky; n.w=BLACK_KEY_W; n.h=BLACK_KEY_H; n.cx=n.x+n.w/2; }}
+        }
+
+        const chordY = ky + WHITE_KEY_H + CHORD_GAP;
+        const chordBtnW = (kbW - (chords.length-1)*5) / chords.length;
+        for (let i = 0; i < chords.length; i++) {
+            chords[i].x = startX + i*(chordBtnW+5);
+            chords[i].y = chordY;
+            chords[i].w = chordBtnW;
+            chords[i].h = CHORD_BTN_H;
+        }
+
+        // Left panel: key selector (top) + mode selector (bottom), stacked vertically
+        const leftX = startX - KEY_SEL_W - 12;
+        const selH  = Math.floor((WHITE_KEY_H - 6) / 2);  // half the piano key height with 6px gap
+        keySelBounds  = { x: leftX, y: ky,           w: KEY_SEL_W, h: selH };
+        modeSelBounds = { x: leftX, y: ky + selH + 6,w: KEY_SEL_W, h: selH };
+        // Right panel: sound preset selector, full piano-key height
+        const rightX = startX + kbW + 12;
+        soundSelBounds = { x: rightX, y: ky, w: KEY_SEL_W, h: WHITE_KEY_H };
+
+        initStars();
+        buildScanlineCanvas();
+    }
+
+    function initStars() {
+        stars.length = 0;
+        for (let i = 0; i < 80; i++) {
+            stars.push({
+                x: Math.random() * W,
+                y: Math.random() * sceneH * 0.42,
+                size: 0.5 + Math.random() * 1.5,
+                twinkleSpeed: 1 + Math.random() * 3,
+                twinklePhase: Math.random() * Math.PI * 2,
+                drift: (Math.random() - 0.5) * 0.15
+            });
+        }
+        starsInited = true;
+    }
+
+    function buildScanlineCanvas() {
+        scanlineCanvas = document.createElement('canvas');
+        scanlineCanvas.width = 1;
+        scanlineCanvas.height = Math.ceil(sceneH);
+        const sctx = scanlineCanvas.getContext('2d');
+        sctx.fillStyle = 'rgba(0,0,0,0.07)';
+        for(let y=0; y<sceneH; y+=3) {
+            sctx.fillRect(0, y, 1, 1);
+        }
+    }
+
+    // ════════════════════════════════════════
+    //  AUDIO ENGINE
+    // ════════════════════════════════════════
+
+    function initAudio() {
+        audioCtx = new (window.AudioContext||window.webkitAudioContext)();
+        const dur=4.5, len=audioCtx.sampleRate*dur;
+        const ir=audioCtx.createBuffer(2,len,audioCtx.sampleRate);
+        for(let ch=0;ch<2;ch++){const d=ir.getChannelData(ch);for(let i=0;i<len;i++)d[i]=(Math.random()*2-1)*Math.pow(1-i/len,2.3);}
+        reverbNode=audioCtx.createConvolver(); reverbNode.buffer=ir;
+        dryBus=audioCtx.createGain(); dryBus.gain.value=0.2;
+        wetBus=audioCtx.createGain(); wetBus.gain.value=0.8;
+        masterBus=audioCtx.createGain(); masterBus.gain.value=0.55;
+        const comp=audioCtx.createDynamicsCompressor();
+        comp.threshold.value=-18; comp.knee.value=12; comp.ratio.value=4;
+        dryBus.connect(comp); reverbNode.connect(wetBus); wetBus.connect(comp);
+        comp.connect(masterBus); masterBus.connect(audioCtx.destination);
+        audioReady=true;
+    }
+
+    function makeSound(freq) {
+        if(!audioReady) return null;
+        const t = audioCtx.currentTime;
+        const p = SOUND_PRESETS[currentPreset];
+        const oscs = [];
+
+        const filter = audioCtx.createBiquadFilter();
+        filter.type = p.ft;
+        filter.frequency.value = Math.min(freq * p.fMult, p.fMax);
+        filter.Q.value = p.fQ;
+
+        const gain = audioCtx.createGain();
+        gain.gain.setValueAtTime(0, t);
+        gain.gain.linearRampToValueAtTime(p.vol, t + p.atk);
+
+        for(const c of p.oscs) {
+            const o = audioCtx.createOscillator();
+            o.type = c.type;
+            o.frequency.value = freq * c.fm;
+            o.detune.value = c.dc;
+            o.connect(filter); o.start(t); oscs.push(o);
+        }
+        filter.connect(gain); gain.connect(dryBus); gain.connect(reverbNode);
+
+        // Textural noise layer — character varies by preset
+        const texLen = Math.floor(audioCtx.sampleRate * 2);
+        const texBuf = audioCtx.createBuffer(1, texLen, audioCtx.sampleRate);
+        const texD = texBuf.getChannelData(0);
+        for(let i = 0; i < texLen; i++) texD[i] = (Math.random()*2-1);
+        const texSrc = audioCtx.createBufferSource();
+        texSrc.buffer = texBuf; texSrc.loop = true;
+        const texFilter = audioCtx.createBiquadFilter();
+        texFilter.type = p.tt; texFilter.frequency.value = freq * p.tMult; texFilter.Q.value = p.tQ;
+        const texGain = audioCtx.createGain();
+        texGain.gain.setValueAtTime(0, t);
+        texGain.gain.linearRampToValueAtTime(p.tVol, t + 2);
+        texSrc.connect(texFilter); texFilter.connect(texGain);
+        texGain.connect(dryBus); texGain.connect(reverbNode);
+        texSrc.start(t);
+
+        return {oscs, gain, filter, freq, alive:true, texSrc, texGain};
+    }
+
+    function bounceHit(s, intensity) {
+        if(!s||!s.alive) return;
+        const t=audioCtx.currentTime;
+
+        const cutoff=s.freq*(3+Math.random()*6);
+        s.filter.frequency.cancelScheduledValues(t);
+        s.filter.frequency.setValueAtTime(Math.min(cutoff,8000),t);
+        s.filter.frequency.linearRampToValueAtTime(Math.min(s.freq*2,2000),t+1.2);
+        s.filter.Q.cancelScheduledValues(t);
+        s.filter.Q.setValueAtTime(1.5+Math.random()*3,t);
+        s.filter.Q.linearRampToValueAtTime(0.6,t+0.5);
+
+        for(const o of s.oscs) o.detune.setValueAtTime((Math.random()-0.5)*25,t);
+
+        const attack=0.005+Math.random()*0.025;
+        const vol=0.14+0.2*intensity;
+        s.gain.gain.cancelScheduledValues(t); s.gain.gain.setValueAtTime(s.gain.gain.value,t);
+        s.gain.gain.linearRampToValueAtTime(vol,t+attack);
+        s.gain.gain.linearRampToValueAtTime(0.04,t+1.8);
+
+        const pingFreq = s.freq * (1 + Math.floor(Math.random()*3));
+        const pingOsc = audioCtx.createOscillator();
+        const pingTypes = ['sine','triangle','sine','square'];
+        pingOsc.type = pingTypes[Math.floor(Math.random()*pingTypes.length)];
+        pingOsc.frequency.value = pingFreq;
+        pingOsc.detune.value = (Math.random()-0.5)*30;
+        const pingFilter = audioCtx.createBiquadFilter();
+        pingFilter.type = 'bandpass';
+        pingFilter.frequency.value = pingFreq * (1.5+Math.random()*2);
+        pingFilter.Q.value = 4+Math.random()*6;
+        const pingGain = audioCtx.createGain();
+        const pingVol = 0.08 + 0.15*intensity;
+        pingGain.gain.setValueAtTime(pingVol,t);
+        pingGain.gain.exponentialRampToValueAtTime(0.001,t+0.3+Math.random()*0.3);
+        pingOsc.connect(pingFilter); pingFilter.connect(pingGain);
+        pingGain.connect(dryBus); pingGain.connect(reverbNode);
+        pingOsc.start(t); pingOsc.stop(t+0.8);
+
+        if(intensity>0.08){
+            const nLen=0.06+Math.random()*0.06;
+            const bufSz=Math.floor(audioCtx.sampleRate*nLen);
+            const nb=audioCtx.createBuffer(1,bufSz,audioCtx.sampleRate);
+            const nd=nb.getChannelData(0);
+            for(let i=0;i<bufSz;i++) nd[i]=(Math.random()*2-1)*Math.pow(1-i/bufSz,1.5);
+            const ns=audioCtx.createBufferSource(); ns.buffer=nb;
+            const nf=audioCtx.createBiquadFilter();
+            nf.type='bandpass'; nf.frequency.value=s.freq*(1.5+Math.random()*3); nf.Q.value=3+Math.random()*5;
+            const ng=audioCtx.createGain();
+            ng.gain.setValueAtTime(0.05*intensity,t); ng.gain.linearRampToValueAtTime(0,t+nLen);
+            ns.connect(nf); nf.connect(ng); ng.connect(dryBus); ng.connect(reverbNode); ns.start(t);
+        }
+    }
+
+    function playBassNote(freq, intensity) {
+        if(!audioReady) return;
+        const t = audioCtx.currentTime + 0.08;
+        const bassFreq = freq * 0.25; // two octaves below
+
+        // Sub-bass sine — heavy fundamental
+        const osc1 = audioCtx.createOscillator();
+        osc1.type = 'sine'; osc1.frequency.value = bassFreq;
+        // Square wave for bite/attack character
+        const osc2 = audioCtx.createOscillator();
+        osc2.type = 'square'; osc2.frequency.value = bassFreq * 1.003;
+        // Saw for harmonics/cut
+        const osc3 = audioCtx.createOscillator();
+        osc3.type = 'sawtooth'; osc3.frequency.value = bassFreq * 2.0;
+
+        // Aggressive waveshaper for distortion/grit
+        const shaper = audioCtx.createWaveShaper();
+        const curve = new Float32Array(256);
+        for(let i=0; i<256; i++){
+            const x = (i/128) - 1;
+            curve[i] = Math.tanh(x * 4.0); // harder saturation
+        }
+        shaper.curve = curve;
+
+        // Attack-heavy filter: starts open, closes fast
+        const bassFilter = audioCtx.createBiquadFilter();
+        bassFilter.type = 'lowpass';
+        bassFilter.frequency.setValueAtTime(600, t); // open on attack
+        bassFilter.frequency.exponentialRampToValueAtTime(80, t + 0.3); // closes fast
+        bassFilter.Q.value = 2;
+
+        const bassGain = audioCtx.createGain();
+        const vol = 0.18 + 0.2 * intensity;
+        bassGain.gain.setValueAtTime(0, t);
+        bassGain.gain.linearRampToValueAtTime(vol, t + 0.003); // near-instant attack
+        bassGain.gain.linearRampToValueAtTime(vol * 0.7, t + 0.15);
+        bassGain.gain.exponentialRampToValueAtTime(0.001, t + 1.8);
+
+        // Saw oscillator gets its own lower gain
+        const sawGain = audioCtx.createGain();
+        sawGain.gain.setValueAtTime(0.5, t);
+        sawGain.gain.exponentialRampToValueAtTime(0.05, t + 0.2); // fades fast after attack
+
+        osc1.connect(shaper); osc2.connect(shaper);
+        osc3.connect(sawGain); sawGain.connect(shaper);
+        shaper.connect(bassFilter); bassFilter.connect(bassGain);
+        bassGain.connect(dryBus); bassGain.connect(reverbNode);
+        osc1.start(t); osc2.start(t); osc3.start(t);
+        osc1.stop(t + 2.5); osc2.stop(t + 2.5); osc3.stop(t + 2.5);
+    }
+
+    function releaseSound(s) {
+        if(!s||!s.alive) return; s.alive=false;
+        const t=audioCtx.currentTime;
+        s.gain.gain.cancelScheduledValues(t); s.gain.gain.setValueAtTime(s.gain.gain.value,t);
+        s.gain.gain.linearRampToValueAtTime(0,t+4);
+        if(s.texGain) {
+            s.texGain.gain.cancelScheduledValues(t);
+            s.texGain.gain.setValueAtTime(s.texGain.gain.value,t);
+            s.texGain.gain.linearRampToValueAtTime(0,t+2);
+        }
+        setTimeout(()=>{
+            for(const o of s.oscs) try{o.stop();}catch(e){}
+            if(s.texSrc) try{s.texSrc.stop();}catch(e){}
+        },5000);
+    }
+
+    // ════════════════════════════════════════
+    //  TERRAIN & WORLD
+    // ════════════════════════════════════════
+
+    // Tent-function spike: returns an upward deflection (subtract from Y) near peakX
+    function terrainSpike(wx, lseed, spacing) {
+        let pk = 0;
+        const base = Math.floor(wx / spacing) * spacing;
+        for(let k = -1; k <= 1; k++) {
+            const bx = base + k * spacing;
+            const s  = bx * 0.00137 + lseed;
+            if(sr(s) > 0.62) {                          // ~38% chance per interval
+                const peakX = bx + (sr(s+1) - 0.5) * spacing * 0.7;
+                const hw    = 55 + sr(s+2) * 110;      // half-width 55–165px → sharpness
+                const amp   = 45 + sr(s+3) * 60;       // height 45–105px
+                const dist  = Math.abs(wx - peakX);
+                if(dist < hw) pk += amp * (1 - dist / hw);
+            }
+        }
+        return pk;
+    }
+
+    function terrain(wx,layer) {
+        if(layer===-1)
+            return sceneH*0.3+Math.sin(wx*0.0003)*60+Math.sin(wx*0.0008+2)*35+Math.sin(wx*0.0015+5)*18;
+        if(layer===0)
+            return sceneH*0.42+Math.sin(wx*0.0007)*50+Math.sin(wx*0.002+3)*24+Math.sin(wx*0.0004+1)*38 - terrainSpike(wx,10,820);
+        if(layer===1)
+            return sceneH*0.56+Math.sin(wx*0.0013)*40+Math.sin(wx*0.004+1)*22+Math.sin(wx*0.009+5)*10 - terrainSpike(wx,20,760);
+        return sceneH*0.66+Math.sin(wx*0.002)*48+Math.sin(wx*0.005+2)*28+Math.sin(wx*0.013+4)*14+Math.sin(wx*0.0006)*55 - terrainSpike(wx,30,700);
+    }
+
+    function surfaceAt(sx,layer) {
+        return terrain(sx+scrl*SCROLL_MULTS[layer],layer);
+    }
+
+    function streamSurfaceAt(sx) {
+        for(const s of dataStreams){
+            const cx=s.wx-scrl*0.15;
+            const hw=s.w*0.5;
+            if(sx>=cx-hw && sx<=cx+hw) return s.y;
+        }
+        return -999;
+    }
+
+    // ─── 3D Rotation helpers ───
+    function rotY(v, a) {
+        const c=Math.cos(a), s=Math.sin(a);
+        return [v[0]*c+v[2]*s, v[1], -v[0]*s+v[2]*c];
+    }
+    function rotX(v, a) {
+        const c=Math.cos(a), s=Math.sin(a);
+        return [v[0], v[1]*c-v[2]*s, v[1]*s+v[2]*c];
+    }
+    function project3D(v, cx, cy, scale) {
+        const depth = 3;
+        const f = scale / (v[2] + depth);
+        return [cx + v[0]*f, cy + v[1]*f];
+    }
+
+    // ─── Shape bounding box for collision ───
+    function getShapeBounds(g) {
+        const sx = g.wx - scrl;
+        if(sx < -300 || sx > W+300) return null;
+        const geom = GEOM[g.geomType];
+        if(!geom) return null;
+        const bobY = g.y + Math.sin(globalTime * 0.8 + g.bobPhase) * 12;
+        const angle = globalTime * g.rotSpeed + g.rotPhase;
+        let minX=Infinity, maxX=-Infinity, minY=Infinity, maxY=-Infinity;
+        for(const v of geom.verts) {
+            let rv = rotY(v, angle);
+            rv = rotX(rv, angle * 0.6);
+            const p = project3D(rv, sx, bobY, g.size);
+            if(p[0]<minX) minX=p[0];
+            if(p[0]>maxX) maxX=p[0];
+            if(p[1]<minY) minY=p[1];
+            if(p[1]>maxY) maxY=p[1];
+        }
+        return {left:minX, right:maxX, top:minY, bottom:maxY, cx:sx, cy:bobY};
+    }
+
+    // ─── Scene objects ───
+    function genObjects() {
+        // 3D shapes — always spawn (no gate), tight spacing guarantees ≥2 on screen
+        while(nextGeoX < scrl+W+500) {
+            // Never repeat a shape type currently on screen
+            const usedTypes = new Set(geoShapes.map(g => g.geomType));
+            const available = GEOM_TYPES.filter(t => !usedTypes.has(t));
+            const pickFrom = available.length > 0 ? available : GEOM_TYPES;
+            const typeIdx = Math.floor(Math.random() * pickFrom.length);
+            geoShapes.push({
+                wx: nextGeoX,
+                y: sceneH*0.04 + sr(nextGeoX+700)*sceneH*0.30,
+                size: 200+sr(nextGeoX+200)*260,
+                geomType: pickFrom[typeIdx],
+                color: SHAPE_COLORS[Math.floor(sr(nextGeoX+500)*SHAPE_COLORS.length)],
+                rotSpeed: 0.08+sr(nextGeoX+600)*0.28,
+                rotPhase: sr(nextGeoX+300)*Math.PI*2,
+                bobPhase: sr(nextGeoX+800)*Math.PI*2
+            });
+            nextGeoX += 550+sr(nextGeoX+500)*350; // spacing 550–900px → 1-2 on screen at once
+        }
+        while(geoShapes.length && geoShapes[0].wx < scrl-500) geoShapes.shift();
+
+        // Tiny far-background shapes — very distant field, parallax scroll at 0.18×
+        // Stored in world-space coords; screen x = wx - scrl*0.18
+        const farScrl = scrl * 0.18;
+        while(nextFarX < farScrl + W + 400) {
+            const typeIdx = Math.floor(sr(nextFarX+9000) * GEOM_TYPES.length);
+            farShapes.push({
+                wx: nextFarX,
+                y: sceneH*0.04 + sr(nextFarX+9100)*sceneH*0.32,
+                size: 16 + sr(nextFarX+9200)*36, // 16–52px — tiny, suggests vast scale
+                geomType: GEOM_TYPES[typeIdx],
+                color: SHAPE_COLORS[Math.floor(sr(nextFarX+9300)*SHAPE_COLORS.length)],
+                rotSpeed: 0.03+sr(nextFarX+9400)*0.08,
+                rotPhase: sr(nextFarX+9500)*Math.PI*2,
+                bobPhase: sr(nextFarX+9600)*Math.PI*2
+            });
+            nextFarX += 120 + sr(nextFarX+9700)*180; // dense field: 120–300px spacing
+        }
+        while(farShapes.length && farShapes[0].wx < farScrl - 400) farShapes.shift();
+
+        // Data streams (collidable)
+        while(nextStreamX < scrl+W+600) {
+            if(sr(nextStreamX*0.07+999) > 0.45) {
+                dataStreams.push({
+                    wx: nextStreamX,
+                    y: 30+sr(nextStreamX+700)*sceneH*0.25,
+                    w: 100+sr(nextStreamX+800)*200,
+                    hueOffset: sr(nextStreamX+900)*360,
+                    speed: 0.3+sr(nextStreamX+1000)*0.7
+                });
+            }
+            nextStreamX += 200+sr(nextStreamX+1100)*300;
+        }
+        while(dataStreams.length && dataStreams[0].wx < scrl-500) dataStreams.shift();
+    }
+
+    // ─── Orb physics ───
+    function pickTarget() {
+        const r=Math.random();
+        if(r<0.15) return {type:'shape'};
+        if(r<0.30) return {type:'stream'};
+        if(r<0.52) return {type:'terrain',layer:0};
+        if(r<0.76) return {type:'terrain',layer:1};
+        return {type:'terrain',layer:2};
+    }
+
+    function fireOrb(note, chordHue) {
+        if(orbs.length>=MAX_ORBS){ releaseSound(orbs.shift().sound); }
+        const minVy = Math.sqrt(2 * GRAVITY * sceneH * 0.45);
+        const maxVy = Math.sqrt(2 * GRAVITY * (sceneH - 10)); // cap: don't go above screen
+        const r=Math.random();
+        let vy;
+        if(r<0.3)      vy=-(minVy + Math.random()*60);
+        else if(r<0.7)  vy=-(minVy + 60 + Math.random()*80);
+        else             vy=-(minVy + 140 + Math.random()*100);
+        vy = Math.max(vy, -maxVy); // clamp velocity
+        const vx=(Math.random()-0.5)*220;
+
+        // Detect root note
+        const notePC = notes.indexOf(note) % 12;
+        const isRoot = (notePC === currentKey);
+        // Chord orbs use the chord's hue; solo key presses use the note's pitch hue
+        const orbHue = (chordHue !== undefined) ? ((chordHue % 360 + 360) % 360) : note.hue;
+        const orbShape = SOUND_PRESETS[currentPreset].orbShape || 'circle';
+
+        orbs.push({
+            x:note.cx, y:sceneH, vx, vy,
+            note, hue:orbHue, shape:orbShape, radius:ORB_RADIUS,
+            sound:makeSound(note.freq),
+            descended:false, prevVy:undefined, target:null,
+            bounces:0, life:0, alpha:1, bounceCooldown:0,
+            stuckTimer:0, bloomPulse:0,
+            trail: [],
+            isRoot, bassPlayed: false
+        });
+    }
+
+    function fireChord(chord) {
+        if(chord.pressed) return;
+        chord.pressed=true;
+        setTimeout(()=>{chord.pressed=false;},500);
+        const delays = [];
+        chord.noteIdx.forEach((ni,i)=>{
+            const delay=i*(55+Math.random()*65);
+            delays.push(delay);
+            // Pass chord hue + tiny per-note offset so notes share a colour family
+            setTimeout(()=>{ if(ni<notes.length) pressNote(notes[ni], chord.hue + i*10); },delay);
+        });
+        // Fire root note again at the end for resolution
+        const rootNi = chord.noteIdx[0];
+        const lastDelay = (delays[delays.length-1] || 0) + 160;
+        setTimeout(()=>{ if(rootNi<notes.length) pressNote(notes[rootNi], chord.hue); }, lastDelay);
+    }
+
+    // ─── Update ───
+    function update(dt) {
+        scrl+=SCROLL_SPEED*dt;
+        globalTime+=dt;
+        genObjects();
+
+        for(let i=orbs.length-1;i>=0;i--){
+            const o=orbs[i];
+            o.life+=dt;
+            o.vy+=GRAVITY*dt;
+            o.y+=o.vy*dt;
+            o.x+=o.vx*dt;
+            if(o.bounceCooldown>0) o.bounceCooldown-=dt;
+
+            // Hard clamp: bounce off top of screen
+            if(o.y < 0) { o.y = 0; o.vy = Math.abs(o.vy); }
+
+            o.trail.push({x:o.x, y:o.y});
+            if(o.trail.length>TRAIL_LEN) o.trail.shift();
+            if(o.bloomPulse>0) o.bloomPulse=Math.max(0, o.bloomPulse - dt*4);
+
+            if(o.x<20){o.x=20;o.vx=Math.abs(o.vx)*0.7;}
+            if(o.x>W-20){o.x=W-20;o.vx=-Math.abs(o.vx)*0.7;}
+
+            const wasUp=o.prevVy!==undefined&&o.prevVy<=0;
+            const nowDown=o.vy>0;
+            if(wasUp&&nowDown){
+                if(!o.descended) o.descended=true;
+                o.target=pickTarget();
+                o.stuckTimer=0;
+            }
+            o.prevVy=o.vy;
+
+            // Stuck detection — mark done but keep velocity so orb drifts away
+            if(o.bounces > 0 && o.bounces < MAX_BOUNCES && Math.abs(o.vy) < 80) {
+                o.stuckTimer += dt;
+                if(o.stuckTimer > 0.5) {
+                    o.bounces = MAX_BOUNCES; // start fading; physics continues
+                }
+            } else if(o.vy < -50) {
+                o.stuckTimer = 0;
+            }
+
+            if(o.descended&&o.target&&o.vy>0&&o.bounceCooldown<=0){
+                let surfY;
+                let hit = false;
+
+                if(o.target.type==='shape') {
+                    // Check collision with 3D shapes
+                    for(const g of geoShapes) {
+                        const bounds = getShapeBounds(g);
+                        if(!bounds) continue;
+                        if(o.x >= bounds.left - o.radius && o.x <= bounds.right + o.radius &&
+                           o.y >= bounds.top - o.radius && o.y <= bounds.bottom + o.radius) {
+                            surfY = bounds.top;
+                            hit = true;
+                            break;
+                        }
+                    }
+                    if(!hit) {
+                        // Fallback to terrain layer 2
+                        surfY = surfaceAt(o.x, 2);
+                        hit = (o.y >= surfY - o.radius);
+                    }
+                } else if(o.target.type==='stream'){
+                    surfY=streamSurfaceAt(o.x);
+                    if(surfY<0) surfY=surfaceAt(o.x,2);
+                    hit = (o.y >= surfY - o.radius);
+                } else {
+                    surfY=surfaceAt(o.x,o.target.layer);
+                    hit = (o.y >= surfY - o.radius);
+                }
+
+                if(hit && surfY !== undefined){
+                    o.y=surfY-o.radius-2;
+                    o.vy=-Math.abs(o.vy)*BOUNCE_DAMP;
+                    o.vx*=0.92;
+                    o.bounces++;
+                    o.bounceCooldown=0.12;
+                    const inten=Math.max(0,1-o.bounces/MAX_BOUNCES);
+                    bounceHit(o.sound,inten);
+                    o.bloomPulse=0.6+0.4*inten;
+
+                    // Bass note on root note first collision
+                    if(o.isRoot && !o.bassPlayed) {
+                        o.bassPlayed = true;
+                        playBassNote(o.note.freq, inten);
+                    }
+
+                    if(Math.abs(o.vy)<MIN_BOUNCE_VEL){
+                        // Too little energy left — start fading but let physics carry it
+                        o.bounces=MAX_BOUNCES;
+                    }
+                }
+            }
+
+            if(o.bounces>=MAX_BOUNCES) o.alpha-=dt*0.28; // slow graceful fade, continues trajectory
+            if(o.x<-120||o.x>W+120||o.alpha<=0||o.life>40||o.y>sceneH+120){
+                releaseSound(o.sound); orbs.splice(i,1);
+            }
+        }
+    }
+
+    // ════════════════════════════════════════
+    //  DRAWING — SYNTHWAVE PALETTE
+    // ════════════════════════════════════════
+
+    function drawBackground() {
+        const horizonY = sceneH * 0.45;
+
+        // Solid dark sky base — identical to CSS bg, zero seam at any edge
+        ctx.fillStyle = '#0c0614';
+        ctx.fillRect(0, 0, W, sceneH);
+
+        // Warm sunset glow: starts fully transparent so it has NO visible upper boundary.
+        // Only the lower ~55% of the sky receives any warm tint at all.
+        const warmStartY = horizonY * 0.45;
+        const warmSkyG = ctx.createLinearGradient(0, warmStartY, 0, horizonY);
+        warmSkyG.addColorStop(0,    'rgba(0,0,0,0)');         // invisible — no hard line
+        warmSkyG.addColorStop(0.28, 'rgba(55,8,3,0.12)');
+        warmSkyG.addColorStop(0.55, 'rgba(115,20,0,0.30)');
+        warmSkyG.addColorStop(0.80, 'rgba(185,42,0,0.54)');
+        warmSkyG.addColorStop(1.0,  'rgba(210,52,0,0.74)');   // peak at horizon
+        ctx.fillStyle = warmSkyG;
+        ctx.fillRect(0, warmStartY, W, horizonY - warmStartY);
+
+        // Wide horizon glow — warm ambient light
+        const glowG = ctx.createRadialGradient(W/2, horizonY, 0, W/2, horizonY, W*0.7);
+        glowG.addColorStop(0, 'rgba(255,69,0,0.2)');
+        glowG.addColorStop(0.2, 'rgba(204,51,0,0.12)');
+        glowG.addColorStop(0.5, 'rgba(139,0,32,0.06)');
+        glowG.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.fillStyle = glowG;
+        ctx.fillRect(0, 0, W, sceneH); // full scene — gradient fades to 0 naturally, no hard edge
+
+        // Sun — upper half only (clip below horizon)
+        const sunX = W/2, sunY = horizonY - 10;
+        const sunR = Math.min(75, sceneH * 0.12);
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(0, 0, W, horizonY); // clip to above horizon
+        ctx.clip();
+
+        const sunG = ctx.createRadialGradient(sunX, sunY, 0, sunX, sunY, sunR);
+        sunG.addColorStop(0, '#ffb300');
+        sunG.addColorStop(0.3, '#ff7b00');
+        sunG.addColorStop(0.6, '#ff4500');
+        sunG.addColorStop(0.85, '#dc143c');
+        sunG.addColorStop(1, 'rgba(220,20,60,0)');
+        ctx.fillStyle = sunG;
+        ctx.beginPath(); ctx.arc(sunX, sunY, sunR, 0, Math.PI*2); ctx.fill();
+
+        // Sliced sun lines — kept well above the horizon clip edge (no line artefact)
+        ctx.fillStyle = 'rgba(5,2,8,0.75)';
+        const sliceCount = 5;
+        const sliceTopY = sunY - sunR * 0.44;   // start ~44% above centre
+        const sliceSpan = sunR * 0.50;           // span 50% of radius downward (~15 px clear of horizon)
+        for(let s=0; s<sliceCount; s++) {
+            const sy = sliceTopY + s * (sliceSpan / sliceCount);
+            const sh = 1.5 + s * 1.0;
+            const dy = sy - sunY;
+            if(Math.abs(dy) > sunR) continue;
+            const halfW = Math.sqrt(Math.max(0, sunR*sunR - dy*dy));
+            ctx.fillRect(sunX - halfW, sy, halfW*2, sh);
+        }
+        ctx.restore(); // remove clip
+
+        // Ground gradient — horizon down to scene bottom
+        const groundG = ctx.createLinearGradient(0, horizonY, 0, sceneH);
+        groundG.addColorStop(0,    'rgba(42,8,8,0)');   // transparent — warm sky bleeds through, no hard seam
+        groundG.addColorStop(0.04, '#2a0808');
+        groundG.addColorStop(0.15, '#1a0610');
+        groundG.addColorStop(0.4, '#100414');
+        groundG.addColorStop(0.7, '#0a0312');
+        groundG.addColorStop(1,   '#050208');
+        ctx.fillStyle = groundG;
+        ctx.fillRect(0, horizonY, W, sceneH - horizonY);
+
+        // Background grid lines — below horizon only
+        ctx.save(); ctx.globalAlpha=0.04;
+        ctx.strokeStyle=SW.gridRed; ctx.lineWidth=1;
+        for(let y=horizonY;y<sceneH;y+=40){
+            ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(W,y); ctx.stroke();
+        }
+        ctx.restore();
+    }
+
+    function drawMountains() {
+        const horizonY = sceneH * 0.45;
+        // Sun window: narrowed to bring mountains closer to the sun
+        const clearL = W * 0.37, clearR = W * 0.63;
+
+        // edgeFactor: 1 at screen edges, 0 inside the clear window, smooth ramp between
+        function edgeFactor(x) {
+            if(x < clearL) return Math.pow(1 - x / clearL, 0.6);
+            if(x > clearR) return Math.pow((x - clearR) / (W - clearR), 0.6);
+            return 0;
+        }
+
+        // Draw one mountain layer as an organic ridgeline with varying-width segments.
+        // centerMin > 0 allows a faint presence even in the clear sun window (distant look).
+        function drawLayer(baseY, color, maxH, seedOff, centerMin = 0) {
+            const pts = [];
+            let x = -80;
+            let s = seedOff;
+            while(x <= W + 100) {
+                const ef = Math.max(centerMin, edgeFactor(x));
+                const segW = 20 + 68 * sr(s++);
+                const isDip = sr(s++) < 0.28;
+                const h = ef * maxH * (isDip
+                    ? 0.03 + 0.18 * sr(s++)
+                    : 0.28 + 0.72 * sr(s++));
+                pts.push({ x, y: baseY - h });
+                x += segW;
+            }
+            ctx.save();
+            ctx.fillStyle = color;
+            ctx.beginPath();
+            ctx.moveTo(-2, baseY + 2);
+            for(const pt of pts) ctx.lineTo(pt.x, pt.y);
+            ctx.lineTo(W + 2, baseY + 2);
+            ctx.closePath();
+            ctx.fill();
+            ctx.restore();
+        }
+
+        // Very distant layer — tiny, spans the whole width including the sun window
+        drawLayer(horizonY,     '#0e000c',  28, 23, 0.28);
+        // Main framing layers
+        drawLayer(horizonY,     '#120010', 145,  3);
+        drawLayer(horizonY + 5, '#1e0016', 105, 11);
+    }
+
+    function drawStarfield() {
+        if(!starsInited) return;
+        ctx.save();
+        const starColors = [SW.amber, SW.hotPink, SW.crimson];
+        for(const s of stars) {
+            s.x += s.drift;
+            if(s.x < 0) s.x = W;
+            if(s.x > W) s.x = 0;
+            const twinkle = 0.35 + 0.65 * Math.abs(Math.sin(globalTime * s.twinkleSpeed + s.twinklePhase));
+            ctx.globalAlpha = twinkle * 0.9;
+            ctx.fillStyle = starColors[Math.floor(s.twinklePhase * 10) % starColors.length];
+            ctx.fillRect(s.x - s.size*0.5, s.y - s.size*0.5, s.size, s.size);
+        }
+        ctx.restore();
+    }
+
+    function drawDataStreams() {
+        for(const s of dataStreams){
+            const cx=s.wx-scrl*0.15;
+            if(cx<-s.w||cx>W+s.w) continue;
+            const hw=s.w*0.5;
+            // Alternate between orange and hot pink
+            const useOrange = (Math.floor(s.hueOffset / 180) % 2 === 0);
+            const color = useOrange ? SW.orange : SW.hotPink;
+
+            ctx.save();
+            // Glow pass
+            ctx.strokeStyle = useOrange ? 'rgba(255,69,0,0.15)' : 'rgba(255,26,94,0.15)';
+            ctx.lineWidth=6; ctx.lineCap='round';
+            ctx.beginPath(); ctx.moveTo(cx-hw,s.y); ctx.lineTo(cx+hw,s.y); ctx.stroke();
+
+            // Core pass
+            ctx.strokeStyle = color;
+            ctx.globalAlpha = 0.7;
+            ctx.lineWidth=1.5;
+            ctx.beginPath(); ctx.moveTo(cx-hw,s.y); ctx.lineTo(cx+hw,s.y); ctx.stroke();
+
+            // Dashed data packets
+            ctx.lineWidth=2; ctx.globalAlpha=0.65;
+            const packetPhase=(scrl*s.speed)%40;
+            ctx.setLineDash([8,12]);
+            ctx.lineDashOffset=-packetPhase;
+            ctx.strokeStyle = useOrange ? SW.crimson : SW.amber;
+            ctx.beginPath(); ctx.moveTo(cx-hw,s.y); ctx.lineTo(cx+hw,s.y); ctx.stroke();
+            ctx.setLineDash([]);
+
+            ctx.restore();
+        }
+    }
+
+    function drawNeonGrid(layer, baseHue, sm, lineW) {
+        const horizonY = sceneH * 0.45;
+        const vpX = W / 2;          // vanishing point = sunset centre
+        const vpY = horizonY;
+        const off = scrl * sm;
+        const MIN_GAP = 32;         // minimum visual gap between adjacent terrain lines (px)
+
+        // Visual y for this layer, gap-enforced so layers can't bunch.
+        // Layer 0 min is horizonY+30 (not +2) — keeps depth lines from fan-out ×165.
+        function dy(x) {
+            const raw = terrain(x + off, layer);
+            if(layer === 0) return Math.max(raw, horizonY + 30);
+            if(layer === 1) {
+                const y0 = Math.max(terrain(x + scrl*SCROLL_MULTS[0], 0), horizonY + 30);
+                return Math.max(raw, y0 + MIN_GAP);
+            }
+            if(layer === 2) {
+                const y0 = Math.max(terrain(x + scrl*SCROLL_MULTS[0], 0), horizonY + 30);
+                const y1 = Math.max(terrain(x + scrl*SCROLL_MULTS[1], 1), y0 + MIN_GAP);
+                return Math.max(raw, y1 + MIN_GAP);
+            }
+            return raw;
+        }
+
+        const hueShift = Math.sin(globalTime * (0.5 + layer*0.3)) * 15;
+        const hue      = baseHue + hueShift;
+        const pulse    = 1 + 0.3 * Math.sin(globalTime * (1.5 + layer*0.7));
+        const glowW    = lineW * 3 * pulse;
+
+        ctx.save();
+        ctx.lineCap = 'round';
+
+        // ── Terrain line — drawn BEFORE the occlusion clip ────────────────────
+        // Must be outside the clip so it is never accidentally hidden when
+        // raw terrain values from adjacent layers happen to be close together.
+        ctx.strokeStyle = hsl(hue, 80, 45, 0.2);
+        ctx.lineWidth   = glowW;
+        ctx.beginPath();
+        for(let x = -2; x <= W+2; x += 5) {
+            const y = dy(x);
+            x === -2 ? ctx.moveTo(x,y) : ctx.lineTo(x,y);
+        }
+        ctx.stroke();
+
+        ctx.strokeStyle = hsl(hue, 85, 58);
+        ctx.lineWidth   = lineW;
+        ctx.beginPath();
+        for(let x = -2; x <= W+2; x += 5) {
+            const y = dy(x);
+            x === -2 ? ctx.moveTo(x,y) : ctx.lineTo(x,y);
+        }
+        ctx.stroke();
+
+        // ── Occlusion clip — applied only to the grid, not the terrain line ───
+        // Background grid is hidden wherever the next-closer terrain sits in front.
+        if(layer < 2) {
+            const occOff = scrl * SCROLL_MULTS[layer + 1];
+            ctx.beginPath();
+            ctx.moveTo(-2, 0);
+            ctx.lineTo(W+2, 0);
+            for(let x = W+2; x >= -2; x -= 5) {
+                // Use gap-corrected y so clip boundary matches what is actually drawn
+                const occRaw = terrain(x + occOff, layer + 1);
+                const occY   = layer === 0
+                    ? Math.max(occRaw, dy(x) + MIN_GAP)   // layer 1 boundary relative to layer 0
+                    : Math.max(occRaw, dy(x) + MIN_GAP);  // layer 2 boundary relative to layer 1
+                ctx.lineTo(x, occY);
+            }
+            ctx.closePath();
+            ctx.clip();
+        }
+
+        // ── 3-D perspective grid ───────────────────────────────────────────────
+        // Perspective density: back=fine (tiny far tiles), front=coarse (big near tiles)
+        const gridSpacing = layer===0 ? 18 : layer===1 ? 52 : 115;
+
+        // DEPTH LINES — radiate from the vanishing point (sunset) outward/downward.
+        // Each line passes through a terrain sample and extends to the scene bottom.
+        ctx.strokeStyle = hsl(hue, 70, 42, 0.32);
+        ctx.lineWidth   = lineW * 0.4;
+        ctx.beginPath();
+        for(let x = -gridSpacing; x <= W + gridSpacing; x += gridSpacing) {
+            const wx  = x + off;
+            const gx  = Math.round(wx / gridSpacing) * gridSpacing;
+            const sx  = gx - off;                  // screen x of this depth line
+            if(sx < -30 || sx > W+30) continue;
+            const ty  = dy(sx);                    // terrain y (gap-corrected)
+            const ddY = ty - vpY;                  // > 0: terrain is below the horizon
+            if(ddY <= 0) continue;
+            // Extend from terrain point to scene bottom, converging toward VP
+            const tMax  = (sceneH - vpY) / ddY;
+            const xEnd  = vpX + tMax * (sx - vpX);
+            ctx.moveTo(sx, ty);
+            ctx.lineTo(xEnd, sceneH);
+        }
+        ctx.stroke();
+
+        // HORIZONTAL LATITUDE LINES — straight across screen, perspectively spaced
+        // (more compressed near the terrain, spreading toward the viewer).
+        // For each layer, distribute lines only within the VISIBLE strip
+        // (from this layer's terrain to the next-closer layer's terrain).
+        // This ensures all numH lines are packed into the strip that's actually shown.
+        const numH = layer===0 ? 9 : layer===1 ? 5 : 2;
+        ctx.strokeStyle = hsl(hue, 55, 36, 0.18);
+        ctx.lineWidth   = lineW * 0.22;
+        ctx.beginPath();
+        // Sample average terrain y for this layer (top of visible strip)
+        let sum = 0, cnt = 0;
+        for(let x = 0; x <= W; x += 40) { sum += dy(x); cnt++; }
+        const avgY = cnt ? sum / cnt : sceneH * 0.5;
+        // Sample average occlusion y = bottom of visible strip for this layer.
+        // For layer 2 (frontmost) there's no occlusion, so bottom = sceneH.
+        let botSum = 0, botCnt = 0;
+        for(let x = 0; x <= W; x += 40) {
+            if(layer < 2) {
+                const occRaw = terrain(x + scrl * SCROLL_MULTS[layer + 1], layer + 1);
+                botSum += Math.max(occRaw, dy(x) + MIN_GAP);
+            } else {
+                botSum += sceneH;
+            }
+            botCnt++;
+        }
+        const bottomY = botCnt ? botSum / botCnt : sceneH;
+        for(let i = 1; i <= numH; i++) {
+            // Power < 1 compresses lines toward the terrain (far end = horizon side)
+            const frac = Math.pow(i / (numH + 1), 0.65);
+            const yH   = avgY + (bottomY - avgY) * frac;
+            ctx.moveTo(0, yH);
+            ctx.lineTo(W, yH);
+        }
+        ctx.stroke();
+
+        ctx.restore();
+    }
+
+    function drawGeometricShapes() {
+        // Clip everything to above the horizon — shapes are distant/behind mountains
+        const horizonY = sceneH * 0.45;
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(0, 0, W, horizonY);
+        ctx.clip();
+
+        // ── Far-background shapes — tiny, faint, parallax at 0.18× ──────────
+        const farScrl = scrl * 0.18;
+        for(const g of farShapes) {
+            const sx = g.wx - farScrl;
+            if(sx < -200 || sx > W+200) continue;
+            const geom = GEOM[g.geomType];
+            if(!geom) continue;
+            const bobY = g.y + Math.sin(globalTime * 0.3 + g.bobPhase) * 4;
+            const angle = globalTime * g.rotSpeed + g.rotPhase;
+            const projected = geom.verts.map(v => {
+                let rv = rotY(v, angle);
+                rv = rotX(rv, angle * 0.5);
+                return project3D(rv, sx, bobY, g.size);
+            });
+            // Very faint, no bloom — just enough to read as a distinct tiny shape
+            ctx.save();
+            ctx.filter = 'blur(0.8px)';
+            ctx.globalAlpha = 0.28 + sr(g.wx+9800) * 0.18; // 0.28–0.46
+            ctx.strokeStyle = g.color;
+            ctx.lineWidth = 0.9;
+            ctx.beginPath();
+            for(const [a,b] of geom.edges) {
+                const pa = projected[a], pb = projected[b];
+                ctx.moveTo(pa[0],pa[1]); ctx.lineTo(pb[0],pb[1]);
+            }
+            ctx.stroke();
+            ctx.filter = 'none';
+            ctx.restore();
+        }
+
+        // ── Main large shapes ─────────────────────────────────────────────────
+        for(const g of geoShapes){
+            const sx=g.wx-scrl;
+            if(sx<-400||sx>W+400) continue;
+
+            const geom = GEOM[g.geomType];
+            if(!geom) continue;
+
+            const bobY = g.y + Math.sin(globalTime * 0.6 + g.bobPhase) * 22;
+            const angle = globalTime * g.rotSpeed + g.rotPhase;
+            const glowPulse = 1 + 0.35 * Math.sin(globalTime * 1.8 + g.rotPhase);
+
+            const projected = geom.verts.map(v => {
+                let rv = rotY(v, angle);
+                rv = rotX(rv, angle * 0.6);
+                return project3D(rv, sx, bobY, g.size);
+            });
+
+            ctx.save();
+
+            const gc = g.color;
+
+            // Wide blurry halo pass — creates depth/glow blur effect
+            ctx.filter = 'blur(6px)';
+            ctx.globalAlpha = 0.10 * glowPulse;
+            ctx.strokeStyle = gc;
+            ctx.lineWidth = 12;
+            ctx.beginPath();
+            for(const [a,b] of geom.edges){
+                const pa = projected[a], pb = projected[b];
+                ctx.moveTo(pa[0],pa[1]); ctx.lineTo(pb[0],pb[1]);
+            }
+            ctx.stroke();
+
+            // Medium blur glow pass
+            ctx.filter = 'blur(2.5px)';
+            ctx.globalAlpha = 0.18 * glowPulse;
+            ctx.lineWidth = 5;
+            ctx.beginPath();
+            for(const [a,b] of geom.edges){
+                const pa = projected[a], pb = projected[b];
+                ctx.moveTo(pa[0],pa[1]); ctx.lineTo(pb[0],pb[1]);
+            }
+            ctx.stroke();
+
+            // Crisp core pass
+            ctx.filter = 'none';
+            ctx.globalAlpha = 0.72;
+            ctx.lineWidth = 1.2;
+            ctx.beginPath();
+            for(const [a,b] of geom.edges){
+                const pa = projected[a], pb = projected[b];
+                ctx.moveTo(pa[0],pa[1]); ctx.lineTo(pb[0],pb[1]);
+            }
+            ctx.stroke();
+
+            // Vertex dots — subtle bright points at each corner
+            ctx.filter = 'none';
+            ctx.globalAlpha = 0.6;
+            ctx.fillStyle = gc;
+            for(const p of projected) {
+                ctx.beginPath(); ctx.arc(p[0], p[1], 2, 0, Math.PI*2); ctx.fill();
+            }
+
+            ctx.restore();
+        }
+
+        ctx.restore(); // end horizon clip
+    }
+
+    function drawScanLines() {
+        if(!scanlineCanvas) return;
+        ctx.save();
+        ctx.globalAlpha = 0.5;
+        ctx.drawImage(scanlineCanvas, 0, 0, 1, scanlineCanvas.height, 0, 0, W, sceneH);
+        ctx.restore();
+    }
+
+    // Draw a trail shape at (cx,cy) — stroke only, no fill, clearly distinct outlines
+    function drawTrailShape(cx, cy, sz, rot, shapeIdx, strokeColor, alpha) {
+        ctx.save();
+        ctx.globalAlpha = alpha;
+        ctx.strokeStyle = strokeColor;
+        ctx.lineWidth = 1.0 + sz * 0.07; // slightly thicker for larger shapes
+        ctx.lineJoin = 'round';
+        ctx.translate(cx, cy);
+        ctx.rotate(rot);
+        ctx.beginPath();
+        switch(shapeIdx % 9) {
+            case 0: // square
+                ctx.rect(-sz, -sz, sz*2, sz*2); break;
+            case 1: // equilateral triangle
+                ctx.moveTo(0,-sz*1.3); ctx.lineTo(sz,sz*0.85); ctx.lineTo(-sz,sz*0.85); ctx.closePath(); break;
+            case 2: // octagon
+                for(let k=0;k<8;k++){const a=k/8*Math.PI*2;k===0?ctx.moveTo(Math.cos(a)*sz,Math.sin(a)*sz):ctx.lineTo(Math.cos(a)*sz,Math.sin(a)*sz);} ctx.closePath(); break;
+            case 3: // tall diamond
+                ctx.moveTo(0,-sz*1.5); ctx.lineTo(sz*0.75,0); ctx.lineTo(0,sz*1.5); ctx.lineTo(-sz*0.75,0); ctx.closePath(); break;
+            case 4: // pentagon
+                for(let k=0;k<5;k++){const a=k/5*Math.PI*2-Math.PI/2;k===0?ctx.moveTo(Math.cos(a)*sz,Math.sin(a)*sz):ctx.lineTo(Math.cos(a)*sz,Math.sin(a)*sz);} ctx.closePath(); break;
+            case 5: // hexagon
+                for(let k=0;k<6;k++){const a=k/6*Math.PI*2;k===0?ctx.moveTo(Math.cos(a)*sz,Math.sin(a)*sz):ctx.lineTo(Math.cos(a)*sz,Math.sin(a)*sz);} ctx.closePath(); break;
+            case 6: // 5-pointed star
+                for(let k=0;k<10;k++){const a=k/10*Math.PI*2-Math.PI/2;const r=k%2===0?sz:sz*0.42;k===0?ctx.moveTo(Math.cos(a)*r,Math.sin(a)*r):ctx.lineTo(Math.cos(a)*r,Math.sin(a)*r);} ctx.closePath(); break;
+            case 7: // cross — drawn as explicit lines so stroke renders cleanly
+                ctx.moveTo(0,-sz*1.2); ctx.lineTo(0,sz*1.2);
+                ctx.moveTo(-sz*1.2,0); ctx.lineTo(sz*1.2,0); break;
+            case 8: // circle
+                ctx.arc(0, 0, sz, 0, Math.PI*2); break;
+        }
+        ctx.stroke();
+        ctx.restore();
+    }
+
+    // Draw the outline path for the current orb shape (used for both glow + crisp passes)
+    // angle: optional travel direction in radians — only used by 'chevron'
+    function pathOrbShape(cx, cy, cr, shape, angle) {
+        ctx.beginPath();
+        switch(shape) {
+            case 'triangle': {
+                const h = cr * 1.2;
+                ctx.moveTo(cx, cy - h);
+                ctx.lineTo(cx + h * 0.9, cy + h * 0.65);
+                ctx.lineTo(cx - h * 0.9, cy + h * 0.65);
+                ctx.closePath();
+                break;
+            }
+            case 'octagon':
+                for(let k = 0; k < 8; k++) {
+                    const a = k / 8 * Math.PI * 2 + Math.PI / 8;
+                    k === 0 ? ctx.moveTo(cx + Math.cos(a)*cr, cy + Math.sin(a)*cr)
+                            : ctx.lineTo(cx + Math.cos(a)*cr, cy + Math.sin(a)*cr);
+                }
+                ctx.closePath();
+                break;
+            case 'square': {
+                const s = cr * 0.92;
+                ctx.rect(cx - s, cy - s, s * 2, s * 2);
+                break;
+            }
+            case 'chevron': {
+                // Points in direction of travel using manual rotation
+                const a = angle || 0;
+                const ca = Math.cos(a), sa = Math.sin(a);
+                const R = (x, y) => [cx + x*ca - y*sa, cy + x*sa + y*ca];
+                const [t0,t1] = R(cr*1.15, 0);           // tip
+                const [l0,l1] = R(-cr*0.55, -cr*0.88);   // left wing
+                const [n0,n1] = R(-cr*0.1,  0);           // notch
+                const [r0,r1] = R(-cr*0.55,  cr*0.88);   // right wing
+                ctx.moveTo(t0,t1); ctx.lineTo(l0,l1);
+                ctx.lineTo(n0,n1); ctx.lineTo(r0,r1);
+                ctx.closePath();
+                break;
+            }
+            default: // circle
+                ctx.arc(cx, cy, cr, 0, Math.PI * 2);
+        }
+    }
+
+    // Orbs — clean circles with elaborate comet tails
+    function drawOrbs() {
+        for(const o of orbs){
+            if(o.x<-50||o.x>W+50) continue;
+            const a = o.alpha;
+
+            // o.hue is either chord hue (0-360) or note pitch hue — use directly
+            const orbHue = o.hue;
+            const cr = o.radius * 1.2; // circle draw radius
+
+            // ── Comet tail — small shapes along the trajectory, each pointing toward the orb ─────
+            if(o.trail.length > 1) {
+                ctx.save();
+                const shapeOffset = Math.floor(o.hue * 3.7 + o.life * 2) | 0;
+
+                for(let ti = 0; ti < o.trail.length; ti++) {
+                    if(ti % 3 !== 0) continue; // skip 2 of every 3 points for clear separation
+                    const tp = o.trail[ti];
+                    const age = ti / (o.trail.length - 1); // 0=oldest, 1=newest (nearest orb)
+                    const shapeA = age * age * 0.92 * a;
+                    if(shapeA < 0.015) continue;
+
+                    // Trail tangent — used for computing perpendicular axis only
+                    const prev = o.trail[Math.max(0, ti-1)];
+                    const next = o.trail[Math.min(o.trail.length-1, ti+1)];
+                    const tanX = next.x - prev.x, tanY = next.y - prev.y;
+                    const tanLen = Math.sqrt(tanX*tanX + tanY*tanY) || 1;
+                    const perpX = -tanY / tanLen, perpY = tanX / tanLen;
+
+                    // Scatter across the trail — seeded per point so shapes don't jitter
+                    const spreadW = cr * (0.55 + (1 - age) * 0.65); // widens toward tail
+                    for(let pi = 0; pi < 2; pi++) {
+                        // Independently seeded random offset — no mirroring
+                        const rnd = sr(ti * 7.31 + o.hue * 0.17 + pi * 113.7);
+                        const frac = rnd * 2 - 1; // -1 to +1 random scatter
+                        const px = tp.x + perpX * frac * spreadW;
+                        const py = tp.y + perpY * frac * spreadW;
+
+                        // Skip shapes inside the orb circle
+                        const pdx = px - o.x, pdy = py - o.y;
+                        if(pdx*pdx + pdy*pdy < cr*cr) continue;
+
+                        // Each shape points its tip back toward the orb's past position
+                        const rot = Math.atan2(o.y - py, o.x - px);
+
+                        const sz = 1.2 + age * 2.0;
+                        const tailHue = (orbHue + Math.floor(rnd * 12)) % 360;
+                        const trailColor = hsl(tailHue, 100, 62 + age * 18);
+                        drawTrailShape(px, py, sz, rot, (shapeOffset + ti * 3 + pi * 47) % 9, trailColor, shapeA);
+                    }
+                }
+                ctx.restore();
+
+                // ── Opaque inner mask — hides any trail shapes inside orb circle ──
+                ctx.save();
+                ctx.globalAlpha = o.alpha;
+                ctx.fillStyle = '#0c0614';
+                ctx.beginPath(); ctx.arc(o.x, o.y, cr * 0.92, 0, Math.PI*2); ctx.fill();
+                ctx.restore();
+            }
+
+            // ── Bloom glow ──────────────────────────────────────────────────
+            const bloom = 1 + o.bloomPulse * 2;
+            const gr = o.radius * (4 + o.bloomPulse * 4) * bloom;
+            const gg = ctx.createRadialGradient(o.x, o.y, 0, o.x, o.y, gr);
+            const ba = Math.min(1, 0.35 + o.bloomPulse * 0.5) * a;
+            gg.addColorStop(0, `hsla(${orbHue},100%,80%,${ba})`);
+            gg.addColorStop(0.25, `hsla(${orbHue},90%,60%,${(0.15+o.bloomPulse*0.25)*a})`);
+            gg.addColorStop(1, `hsla(${orbHue},80%,50%,0)`);
+            ctx.fillStyle = gg;
+            ctx.beginPath(); ctx.arc(o.x, o.y, gr, 0, Math.PI*2); ctx.fill();
+
+            // ── Circle — glow pass then crisp core ─────────────────────────
+            ctx.save();
+            const travelAngle = Math.atan2(o.vy, o.vx);
+            ctx.globalAlpha = 0.32 * a;
+            ctx.strokeStyle = hsl(orbHue, 100, 70);
+            ctx.lineWidth = 7;
+            pathOrbShape(o.x, o.y, cr, o.shape, travelAngle); ctx.stroke();
+
+            ctx.globalAlpha = 0.95 * a;
+            ctx.strokeStyle = hsl(orbHue, 100, 88);
+            ctx.lineWidth = 3.5;
+            pathOrbShape(o.x, o.y, cr, o.shape, travelAngle); ctx.stroke();
+            ctx.restore();
+        }
+    }
+
+    function rrect(x,y,w,h,tl,tr,br,bl) {
+        ctx.beginPath();
+        ctx.moveTo(x+tl,y); ctx.lineTo(x+w-tr,y);
+        ctx.quadraticCurveTo(x+w,y,x+w,y+tr);
+        ctx.lineTo(x+w,y+h-br);
+        ctx.quadraticCurveTo(x+w,y+h,x+w-br,y+h);
+        ctx.lineTo(x+bl,y+h);
+        ctx.quadraticCurveTo(x,y+h,x,y+h-bl);
+        ctx.lineTo(x,y+tl); ctx.quadraticCurveTo(x,y,x+tl,y);
+        ctx.closePath();
+    }
+
+    // Generic up/down spinner widget used by all three selectors
+    function drawSpinner(bounds, label, valueText, valueColor, borderColor) {
+        const {x,y,w,h} = bounds;
+        if(w===0) return;
+        ctx.save();
+        ctx.fillStyle = '#0a0a18';
+        rrect(x,y,w,h,6,6,6,6); ctx.fill();
+        ctx.strokeStyle = borderColor||'rgba(255,69,0,0.3)'; ctx.lineWidth=1;
+        rrect(x,y,w,h,6,6,6,6); ctx.stroke();
+
+        ctx.textAlign='center'; ctx.textBaseline='middle';
+        const cx = x + w/2;
+
+        // Label
+        ctx.fillStyle = SW.amber; ctx.font = '9px '+FONT;
+        ctx.fillText(label, cx, y+9);
+
+        // Up arrow
+        const arrowW = Math.min(8, w*0.28);
+        const upY = y + h*0.30;
+        ctx.fillStyle = SW.orange; ctx.beginPath();
+        ctx.moveTo(cx, upY-arrowW*0.8); ctx.lineTo(cx+arrowW, upY+arrowW*0.4);
+        ctx.lineTo(cx-arrowW, upY+arrowW*0.4); ctx.closePath(); ctx.fill();
+
+        // Value text — soft glow ring behind it
+        ctx.globalAlpha = 0.15;
+        ctx.fillStyle = valueColor||SW.amber;
+        ctx.beginPath(); ctx.arc(cx, y+h/2, w*0.38, 0, Math.PI*2); ctx.fill();
+        ctx.globalAlpha = 1;
+        ctx.fillStyle = valueColor||SW.amber;
+        ctx.font = '18px '+FONT;
+        ctx.fillText(valueText, cx, y+h/2+1);
+
+        // Down arrow
+        const dnY = y + h*0.72;
+        ctx.fillStyle = SW.orange; ctx.beginPath();
+        ctx.moveTo(cx, dnY+arrowW*0.8); ctx.lineTo(cx+arrowW, dnY-arrowW*0.4);
+        ctx.lineTo(cx-arrowW, dnY-arrowW*0.4); ctx.closePath(); ctx.fill();
+
+        ctx.restore();
+    }
+
+    function drawKeySelector() {
+        drawSpinner(keySelBounds, 'KEY', NOTE_NAMES[currentKey], SW.amber);
+    }
+
+    function drawModeSelector() {
+        drawSpinner(modeSelBounds, 'MODE', MODES[currentMode].short, SW.orange);
+    }
+
+    function drawSoundSelector() {
+        const p = SOUND_PRESETS[currentPreset];
+        // Taller box: draw label + arrows + name + index dots
+        const {x,y,w,h} = soundSelBounds;
+        if(w===0) return;
+        ctx.save();
+        ctx.fillStyle = '#0a0a18';
+        rrect(x,y,w,h,6,6,6,6); ctx.fill();
+        ctx.strokeStyle = 'rgba(255,69,0,0.3)'; ctx.lineWidth=1;
+        rrect(x,y,w,h,6,6,6,6); ctx.stroke();
+
+        ctx.textAlign='center'; ctx.textBaseline='middle';
+        const cx = x + w/2;
+
+        // Label
+        ctx.fillStyle = SW.amber; ctx.font = '9px '+FONT; ctx.fillText('SOUND', cx, y+9);
+
+        // Up arrow
+        const arrowW = Math.min(8, w*0.28);
+        const upY = y + h*0.22;
+        ctx.fillStyle = SW.orange; ctx.beginPath();
+        ctx.moveTo(cx, upY-arrowW*0.8); ctx.lineTo(cx+arrowW, upY+arrowW*0.4);
+        ctx.lineTo(cx-arrowW, upY+arrowW*0.4); ctx.closePath(); ctx.fill();
+
+        // Glow + name
+        ctx.globalAlpha = 0.18;
+        ctx.fillStyle = p.color;
+        ctx.beginPath(); ctx.arc(cx, y+h/2, w*0.42, 0, Math.PI*2); ctx.fill();
+        ctx.globalAlpha = 1;
+        ctx.fillStyle = p.color; ctx.font = '15px '+FONT;
+        ctx.fillText(p.name, cx, y+h/2);
+
+        // Down arrow
+        const dnY = y + h*0.76;
+        ctx.fillStyle = SW.orange; ctx.beginPath();
+        ctx.moveTo(cx, dnY+arrowW*0.8); ctx.lineTo(cx+arrowW, dnY-arrowW*0.4);
+        ctx.lineTo(cx-arrowW, dnY-arrowW*0.4); ctx.closePath(); ctx.fill();
+
+        // Index dots at bottom
+        const dotR = 3, dotSpacing = 9;
+        const dotsW = (SOUND_PRESETS.length-1)*dotSpacing;
+        const dotStartX = cx - dotsW/2;
+        for(let i=0; i<SOUND_PRESETS.length; i++) {
+            ctx.globalAlpha = i===currentPreset ? 1 : 0.25;
+            ctx.fillStyle = i===currentPreset ? p.color : SW.amber;
+            ctx.beginPath();
+            ctx.arc(dotStartX+i*dotSpacing, y+h-11, dotR, 0, Math.PI*2);
+            ctx.fill();
+        }
+        ctx.globalAlpha = 1;
+        ctx.restore();
+    }
+
+    function drawKeyboardGrid(ky) {
+        ctx.save();
+        ctx.strokeStyle='rgba(50,20,20,0.18)';
+        ctx.lineWidth=1;
+        const gridStep = 20;
+        for(let y=ky; y<H; y+=gridStep) {
+            ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(W,y); ctx.stroke();
+        }
+        for(let x=0; x<W; x+=gridStep) {
+            ctx.beginPath(); ctx.moveTo(x,ky); ctx.lineTo(x,H); ctx.stroke();
+        }
+        ctx.restore();
+    }
+
+    function drawKeyboard() {
+        const ky=H-KEYBOARD_HEIGHT;
+
+        ctx.fillStyle='#08080f';
+        ctx.fillRect(0,ky-14,W,KEYBOARD_HEIGHT+14);
+
+        drawKeyboardGrid(ky);
+
+        const kg=ctx.createLinearGradient(0,ky-14,0,ky+6);
+        kg.addColorStop(0,'rgba(0,0,0,0)'); kg.addColorStop(1,'rgba(8,8,15,0.95)');
+        ctx.fillStyle=kg; ctx.fillRect(0,ky-14,W,20);
+
+        // White keys
+        for(const n of whites){
+            const g=ctx.createLinearGradient(0,n.y,0,n.y+n.h);
+            if(n.pressed){g.addColorStop(0,'#2a1510');g.addColorStop(1,'#180a08');}
+            else{g.addColorStop(0,'#181e28');g.addColorStop(1,'#10141c');}
+            ctx.fillStyle=g; rrect(n.x,n.y,n.w,n.h,0,0,5,5); ctx.fill();
+            ctx.strokeStyle=n.pressed?'rgba(255,69,0,0.5)':'rgba(80,30,30,0.4)'; ctx.lineWidth=0.8;
+            rrect(n.x,n.y,n.w,n.h,0,0,5,5); ctx.stroke();
+            if(n.pressed){
+                ctx.strokeStyle='rgba(255,69,0,0.6)'; ctx.lineWidth=2;
+                rrect(n.x,n.y,n.w,n.h,0,0,5,5); ctx.stroke();
+            }
+        }
+        // Black keys
+        for(const n of blacks){
+            if(n.x===undefined) continue;
+            const g=ctx.createLinearGradient(0,n.y,0,n.y+n.h);
+            if(n.pressed){g.addColorStop(0,'#201008');g.addColorStop(1,'#100804');}
+            else{g.addColorStop(0,'#0a0e14');g.addColorStop(1,'#060810');}
+            ctx.fillStyle=g; rrect(n.x,n.y,n.w,n.h,0,0,4,4); ctx.fill();
+            if(n.pressed){
+                ctx.strokeStyle='rgba(255,69,0,0.6)'; ctx.lineWidth=2;
+                rrect(n.x,n.y,n.w,n.h,0,0,4,4); ctx.stroke();
+            }
+        }
+
+        // Chord buttons — synthwave colors
+        ctx.font='13px '+FONT; ctx.textAlign='center'; ctx.textBaseline='middle';
+        for(const ch of chords){
+            const active=ch.pressed;
+            ctx.fillStyle=active?'#1a0c08':'#0c0808';
+            rrect(ch.x,ch.y,ch.w,ch.h,6,6,6,6); ctx.fill();
+            ctx.strokeStyle=active?SW.orange:'rgba(139,0,32,0.3)'; ctx.lineWidth=active?2:1;
+            rrect(ch.x,ch.y,ch.w,ch.h,6,6,6,6); ctx.stroke();
+            ctx.fillStyle=active?SW.amber:SW.crimson;
+            ctx.fillText(ch.name,ch.x+ch.w/2,ch.y+ch.h/2);
+        }
+
+        drawKeySelector();
+        drawModeSelector();
+        drawSoundSelector();
+    }
+
+    // ─── Main Render ───
+    function render() {
+        ctx.clearRect(0,0,W,H);
+
+        drawBackground();
+        drawGeometricShapes();   // behind mountains — suggests vast scale/distance
+        drawMountains();
+        drawStarfield();
+        drawDataStreams();
+
+        // Neon terrain: warm red, orange, crimson
+        drawNeonGrid(0, 350, 0.3, 1.0);
+        drawNeonGrid(1, 20,  0.6, 1.5);
+        drawNeonGrid(2, 335, 1.0, 2.0);
+
+        drawOrbs();
+
+        drawScanLines();
+
+        // Deep purple vignette
+        const vg=ctx.createRadialGradient(W/2,sceneH*0.45,sceneH*0.3,W/2,sceneH*0.45,W*0.75);
+        vg.addColorStop(0,'rgba(0,0,0,0)');
+        vg.addColorStop(0.7,'rgba(0,0,0,0)');
+        vg.addColorStop(1,'rgba(12,4,8,0.45)');
+        ctx.fillStyle=vg; ctx.fillRect(0,0,W,sceneH);
+
+        drawKeyboard();
+    }
+
+    // ─── Loop ───
+    function frame(t) {
+        const dt=Math.min((t-lastT)/1000,0.05);
+        lastT=t; update(dt); render();
+        requestAnimationFrame(frame);
+    }
+
+    // ─── Input ───
+    function noteAt(x,y) {
+        for(const n of blacks){if(n.x===undefined)continue;if(x>=n.x&&x<=n.x+n.w&&y>=n.y&&y<=n.y+n.h)return n;}
+        for(const n of whites){if(x>=n.x&&x<=n.x+n.w&&y>=n.y&&y<=n.y+n.h)return n;}
+        return null;
+    }
+    function chordAt(x,y) {
+        for(const ch of chords){if(x>=ch.x&&x<=ch.x+ch.w&&y>=ch.y&&y<=ch.y+ch.h)return ch;}
+        return null;
+    }
+    function spinnerHit(bounds, x, y) {
+        const {x:bx,y:by,w,h} = bounds;
+        if(x<bx||x>bx+w||y<by||y>by+h) return null;
+        if(y < by+h*0.45) return 'up';
+        if(y > by+h*0.55) return 'down';
+        return null;
+    }
+
+    function changeKey(dir) {
+        currentKey = (currentKey + dir + 12) % 12;
+        generateChords(currentKey);
+        layout();
+    }
+
+    function changeMode(dir) {
+        currentMode = (currentMode + dir + MODES.length) % MODES.length;
+        generateChords(currentKey);
+        layout();
+    }
+
+    function changePreset(dir) {
+        currentPreset = (currentPreset + dir + SOUND_PRESETS.length) % SOUND_PRESETS.length;
+        if(audioReady) {
+            const p = SOUND_PRESETS[currentPreset];
+            const t = audioCtx.currentTime;
+            dryBus.gain.setTargetAtTime(p.dry, t, 0.4);
+            wetBus.gain.setTargetAtTime(p.wet, t, 0.4);
+        }
+    }
+
+    function pressNote(n, chordHue) {
+        if(!n||n.pressed) return;
+        n.pressed=true; fireOrb(n, chordHue);
+        setTimeout(()=>{n.pressed=false;},180);
+    }
+
+    function handleInput(x,y) {
+        const n=noteAt(x,y);
+        if(n){pressNote(n);return;}
+        const ch=chordAt(x,y);
+        if(ch){fireChord(ch);return;}
+        const ks=spinnerHit(keySelBounds,x,y);
+        if(ks==='up')   { changeKey(-1);     return; }
+        if(ks==='down') { changeKey(1);      return; }
+        const ms=spinnerHit(modeSelBounds,x,y);
+        if(ms==='up')   { changeMode(-1);    return; }
+        if(ms==='down') { changeMode(1);     return; }
+        const ss=spinnerHit(soundSelBounds,x,y);
+        if(ss==='up')   { changePreset(-1);  return; }
+        if(ss==='down') { changePreset(1);   return; }
+    }
+
+    canvas.addEventListener('mousedown',e=>{
+        const r=canvas.getBoundingClientRect();
+        handleInput(e.clientX-r.left, e.clientY-r.top);
+    });
+    canvas.addEventListener('touchstart',e=>{
+        e.preventDefault();
+        const r=canvas.getBoundingClientRect();
+        for(const t of e.changedTouches) handleInput(t.clientX-r.left, t.clientY-r.top);
+    },{passive:false});
+
+    const kmap={'a':0,'w':1,'s':2,'e':3,'d':4,'f':5,'t':6,'g':7,'y':8,'h':9,'u':10,'j':11,
+        'k':12,'o':13,'l':14,'p':15,';':16,"'":17};
+    const held=new Set();
+    document.addEventListener('keydown',e=>{
+        if(e.key==='ArrowUp')  { e.preventDefault(); changePreset(-1); return; }
+        if(e.key==='ArrowDown'){ e.preventDefault(); changePreset(1);  return; }
+        if(e.repeat||held.has(e.key))return;
+        const idx=kmap[e.key.toLowerCase()];
+        if(idx!==undefined&&idx<notes.length){held.add(e.key);pressNote(notes[idx]);}
+    });
+    document.addEventListener('keyup',e=>held.delete(e.key));
+
+    // ─── Start ───
+    overlay.addEventListener('click',()=>{
+        initAudio(); overlay.style.opacity='0';
+        setTimeout(()=>overlay.style.display='none',600);
+    });
+    window.addEventListener('resize',layout);
+    layout();
+    lastT=performance.now();
+    requestAnimationFrame(frame);
+})();
+</script>
+
+<!-- Always-present portal back to the current build -->
+<div onclick="window.location.href='dream-train.html'" style="
+    position: fixed;
+    top: 14px;
+    right: 14px;
+    z-index: 9999;
+    background: rgba(10,3,20,0.93);
+    border: 1.5px solid rgba(139,0,32,0.75);
+    border-top: 2px solid rgba(220,80,120,0.85);
+    border-radius: 8px 8px 0 0;
+    padding: 10px 20px;
+    cursor: pointer;
+    font-family: 'Courier New', monospace;
+    font-size: 13px;
+    font-weight: bold;
+    letter-spacing: 0.08em;
+    color: rgba(220,100,130,0.9);
+    user-select: none;
+    transition: border-color 0.15s, color 0.15s;
+" onmouseover="this.style.color='rgba(255,160,80,1)';this.style.borderColor='rgba(200,140,30,0.9)';this.style.borderTopColor='rgba(220,160,40,1)'"
+   onmouseout="this.style.color='rgba(220,100,130,0.9)';this.style.borderColor='rgba(139,0,32,0.75)';this.style.borderTopColor='rgba(220,80,120,0.85)'">
+    CURRENT ►
+</div>
+
+</body>
+</html>

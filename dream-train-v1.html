@@ -1,0 +1,607 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Dream Train</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+html, body { width:100%; height:100%; overflow:hidden; background:#87ceeb; }
+canvas { display:block; width:100%; height:100%; touch-action:none; }
+#overlay {
+    position:fixed; top:0; left:0; right:0; bottom:0;
+    background:rgba(100,175,220,0.86);
+    display:flex; flex-direction:column; align-items:center; justify-content:center;
+    cursor:pointer; z-index:10; transition:opacity 0.9s;
+    font-family:Georgia,'Times New Roman',serif;
+}
+#overlay h1 {
+    font-size:13vw; font-style:italic;
+    color:#1a5c1a; line-height:0.9;
+    text-shadow:0 0 40px rgba(60,180,60,0.45), 0 3px 0 rgba(0,60,0,0.15);
+    letter-spacing:0.03em;
+}
+#overlay p {
+    font-size:1.2em; color:#2a7530;
+    margin-top:0.9em; font-style:italic;
+    opacity:0.75; letter-spacing:0.05em;
+}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="overlay">
+    <h1>Dream Train</h1>
+    <p>touch anything to begin your journey</p>
+</div>
+
+<div onclick="window.location.href='dream-train.html'" style="
+    position:fixed; top:14px; right:14px; z-index:9999;
+    background:rgba(10,3,20,0.93);
+    border:1.5px solid rgba(139,0,32,0.75);
+    border-top:2px solid rgba(220,80,120,0.85);
+    border-radius:8px 8px 0 0;
+    padding:10px 20px; cursor:pointer;
+    font-family:'Courier New',monospace; font-size:13px;
+    font-weight:bold; letter-spacing:0.08em;
+    color:rgba(220,100,130,0.9); user-select:none;
+" onmouseover="this.style.color='rgba(255,160,80,1)';this.style.borderTopColor='rgba(220,160,40,1)'"
+   onmouseout="this.style.color='rgba(220,100,130,0.9)';this.style.borderTopColor='rgba(220,80,120,0.85)'">
+    CURRENT ►
+</div>
+
+<script>
+(() => {
+    const canvas  = document.getElementById('c');
+    const ctx     = canvas.getContext('2d');
+    const overlay = document.getElementById('overlay');
+
+    // ─── Config ──────────────────────────────────────────────────────────────
+    const GRAVITY        = 175;
+    const BOUNCE_DAMP    = 0.58;
+    const MIN_BOUNCE_VEL = 38;
+    const MAX_BOUNCES    = 14;
+    const ORB_RADIUS     = 10;
+    const MAX_ORBS       = 24;
+    const SCROLL_SPEED   = 58;    // world px per second — gentle train pace
+
+    const WHITE_KEY_W    = 42;
+    const BLACK_KEY_W    = 26;
+    const WHITE_KEY_H    = 128;
+    const BLACK_KEY_H    = 80;
+    const KEYBOARD_HEIGHT = WHITE_KEY_H + 14;
+
+    // ─── Notes: C3 – C5 ──────────────────────────────────────────────────────
+    const NOTE_NAMES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+    const IS_BLACK   = [0,1,0,1,0,0,1,0,1,0,1,0];
+    const NOTE_HUES  = [0,30,60,90,120,150,180,210,240,270,300,330];
+    function midiFreq(m) { return 440 * Math.pow(2, (m - 69) / 12); }
+
+    const allNotes = [];
+    for(let midi = 48; midi <= 72; midi++) {
+        const pc = midi % 12;
+        allNotes.push({
+            name: NOTE_NAMES[pc] + Math.floor(midi / 12 - 1),
+            freq: midiFreq(midi),
+            isBlack: IS_BLACK[pc] === 1,
+            pc, midi,
+            hue: NOTE_HUES[pc],
+            x:0, y:0, w:0, h:0, cx:0, pressed:false
+        });
+    }
+
+    // ─── Layout ──────────────────────────────────────────────────────────────
+    let W=0, H=0, sceneH=0, dpr=1;
+    let whites=[], blacks=[];
+
+    function layout() {
+        dpr    = window.devicePixelRatio || 1;
+        W      = window.innerWidth;
+        H      = window.innerHeight;
+        canvas.width  = W * dpr;
+        canvas.height = H * dpr;
+        canvas.style.width  = W + 'px';
+        canvas.style.height = H + 'px';
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        sceneH = H - KEYBOARD_HEIGHT;
+
+        whites = allNotes.filter(n => !n.isBlack);
+        blacks = allNotes.filter(n => n.isBlack);
+
+        const totalW = whites.length * WHITE_KEY_W;
+        const kbX    = (W - totalW) / 2;
+
+        whites.forEach((n, i) => {
+            n.x  = kbX + i * WHITE_KEY_W;
+            n.y  = sceneH;
+            n.w  = WHITE_KEY_W - 1;
+            n.h  = WHITE_KEY_H;
+            n.cx = n.x + WHITE_KEY_W / 2;
+        });
+
+        // Black key positions: sit between the white key to their left and right
+        const midiToX = {};
+        whites.forEach(n => { midiToX[n.midi] = n.x; });
+        blacks.forEach(n => {
+            for(let m = n.midi - 1; m >= 48; m--) {
+                if(midiToX[m] !== undefined) {
+                    n.x  = midiToX[m] + WHITE_KEY_W - BLACK_KEY_W / 2;
+                    n.y  = sceneH;
+                    n.w  = BLACK_KEY_W - 1;
+                    n.h  = BLACK_KEY_H;
+                    n.cx = n.x + BLACK_KEY_W / 2;
+                    break;
+                }
+            }
+        });
+
+        initClouds();
+    }
+
+    // ─── Seeded random (deterministic world generation) ───────────────────────
+    function sr(n) {
+        let h = n | 0;
+        h = Math.imul(h ^ (h >>> 16), 0x45d9f3b);
+        h = Math.imul(h ^ (h >>> 16), 0x45d9f3b);
+        return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
+    }
+
+    // ─── Terrain ─────────────────────────────────────────────────────────────
+    let scrollX = 0;
+
+    // Returns the y position of the ground surface at world-x coordinate wx
+    function terrainY(wx) {
+        return sceneH * 0.68
+             - Math.sin(wx * 0.0032) * 48
+             - Math.sin(wx * 0.0078 + 1.9) * 28
+             - Math.sin(wx * 0.0017 + 0.5) * 65
+             - Math.sin(wx * 0.013  + 0.2) * 12;
+    }
+
+    // Surface at screen-x position (accounting for current scroll)
+    function surfaceAt(sx) {
+        return terrainY(sx + scrollX) - ORB_RADIUS;
+    }
+
+    // ─── Clouds ──────────────────────────────────────────────────────────────
+    let clouds = [];
+
+    function newCloud(x) {
+        return {
+            x,
+            y:     sceneH * (0.06 + Math.random() * 0.22),
+            w:     95 + Math.random() * 140,
+            h:     30 + Math.random() * 42,
+            drift: 0.16 + Math.random() * 0.14   // fraction of SCROLL_SPEED
+        };
+    }
+
+    function initClouds() {
+        clouds = [];
+        for(let i = 0; i < 7; i++)
+            clouds.push(newCloud(Math.random() * (W + 300)));
+    }
+
+    function updateClouds(dt) {
+        for(const c of clouds) {
+            c.x -= SCROLL_SPEED * c.drift * dt;
+            if(c.x + c.w < 0) {
+                Object.assign(c, newCloud(W + 60 + Math.random() * 250));
+            }
+        }
+    }
+
+    function drawCloud(c) {
+        const r = c.h / 2;
+        ctx.save();
+        ctx.fillStyle = 'rgba(255,252,255,0.90)';
+        ctx.beginPath(); ctx.ellipse(c.x + c.w*0.50, c.y + r,      c.w*0.44, r,      0, 0, Math.PI*2); ctx.fill();
+        ctx.beginPath(); ctx.ellipse(c.x + c.w*0.26, c.y + r*0.35, c.w*0.22, r*0.75, 0, 0, Math.PI*2); ctx.fill();
+        ctx.beginPath(); ctx.ellipse(c.x + c.w*0.70, c.y + r*0.50, c.w*0.20, r*0.62, 0, 0, Math.PI*2); ctx.fill();
+        ctx.globalAlpha = 0.09;
+        ctx.fillStyle = '#5080a0';
+        ctx.beginPath(); ctx.ellipse(c.x + c.w*0.50, c.y + r*1.55, c.w*0.42, r*0.32, 0, 0, Math.PI*2); ctx.fill();
+        ctx.restore();
+    }
+
+    // ─── Trees ───────────────────────────────────────────────────────────────
+    function drawTrees() {
+        const step = 58;
+        const left = (Math.floor(scrollX / step) - 1) * step;
+        for(let wx = left; wx <= left + W + step * 3; wx += step) {
+            const slot = wx / step | 0;
+            if(sr(slot * 7 + 1) < 0.42) continue;   // ~58% of slots have a tree
+            const r2 = sr(slot * 7 + 2);
+            const r3 = sr(slot * 7 + 3);
+            const r4 = sr(slot * 7 + 4);
+            const sx      = wx - scrollX;
+            const gy      = terrainY(wx);
+            const trunkH  = 30 + r2 * 45;
+            const canopyR = 24 + r3 * 32;
+            const treeHue = 105 + r4 * 35;
+
+            // Trunk
+            ctx.fillStyle = `hsl(26,${30 + r4*18|0}%,${25 + r2*12|0}%)`;
+            ctx.fillRect(sx - 4, gy - trunkH, 8, trunkH + 2);
+
+            // Canopy — three overlapping circles for a leafy look
+            const cx = sx, cy = gy - trunkH - canopyR * 0.55;
+            ctx.fillStyle = `hsl(${treeHue},${48+r2*18|0}%,${22+r3*12|0}%)`;
+            ctx.beginPath(); ctx.arc(cx, cy, canopyR, 0, Math.PI*2); ctx.fill();
+            ctx.fillStyle = `hsl(${treeHue+8},${54+r4*18|0}%,${32+r2*10|0}%)`;
+            ctx.beginPath(); ctx.arc(cx - canopyR*0.28, cy - canopyR*0.22, canopyR*0.72, 0, Math.PI*2); ctx.fill();
+            ctx.fillStyle = `hsl(${treeHue+14},${42+r3*18|0}%,${42+r1(slot)*8|0}%)`;
+            ctx.beginPath(); ctx.arc(cx + canopyR*0.22, cy - canopyR*0.30, canopyR*0.56, 0, Math.PI*2); ctx.fill();
+        }
+    }
+    function r1(slot) { return sr(slot * 7 + 5); }
+
+    // ─── Flowers scattered on the terrain surface ─────────────────────────────
+    function drawFlowers() {
+        const step = 34;
+        const left = (Math.floor(scrollX / step) - 1) * step;
+        for(let wx = left; wx <= left + W + step * 2; wx += step) {
+            const slot = wx / step | 0;
+            if(sr(slot * 11 + 3) < 0.58) continue;
+            const r2 = sr(slot * 11 + 4);
+            const r3 = sr(slot * 11 + 5);
+            const sx = wx - scrollX;
+            const gy = terrainY(wx) - 3;
+            const hue = r2 > 0.55 ? 52 : r3 > 0.50 ? 308 : 188;
+            ctx.fillStyle = `hsla(${hue},82%,72%,0.88)`;
+            ctx.beginPath(); ctx.arc(sx, gy, 3, 0, Math.PI*2); ctx.fill();
+        }
+    }
+
+    // ─── Scene drawing ────────────────────────────────────────────────────────
+    function drawScene() {
+        // Sky gradient
+        const sky = ctx.createLinearGradient(0, 0, 0, sceneH);
+        sky.addColorStop(0,   '#4e9ed8');
+        sky.addColorStop(0.55,'#a0d4ee');
+        sky.addColorStop(1,   '#ceeaf8');
+        ctx.fillStyle = sky;
+        ctx.fillRect(0, 0, W, sceneH);
+
+        // Distant hazy hills (slow parallax)
+        ctx.fillStyle = 'rgba(130,185,145,0.50)';
+        ctx.beginPath(); ctx.moveTo(0, sceneH);
+        for(let x = 0; x <= W; x += 28) {
+            const wx = x + scrollX * 0.22;
+            ctx.lineTo(x, sceneH * 0.48 - Math.sin(wx * 0.0022) * 75 - Math.sin(wx * 0.0007) * 105);
+        }
+        ctx.lineTo(W, sceneH); ctx.closePath(); ctx.fill();
+
+        // Mid-distance rolling hills
+        ctx.fillStyle = '#68ae4e';
+        ctx.beginPath(); ctx.moveTo(0, sceneH);
+        for(let x = 0; x <= W; x += 20) {
+            const wx = x + scrollX * 0.50;
+            ctx.lineTo(x, sceneH * 0.60 - Math.sin(wx * 0.0040) * 48 - Math.sin(wx * 0.0011) * 78);
+        }
+        ctx.lineTo(W, sceneH); ctx.closePath(); ctx.fill();
+
+        // Clouds
+        for(const c of clouds) drawCloud(c);
+
+        // Main terrain fill
+        const terrGrad = ctx.createLinearGradient(0, sceneH * 0.5, 0, sceneH);
+        terrGrad.addColorStop(0,   '#4aab38');
+        terrGrad.addColorStop(0.25,'#3d9228');
+        terrGrad.addColorStop(1,   '#295e1c');
+        ctx.fillStyle = terrGrad;
+        ctx.beginPath(); ctx.moveTo(0, sceneH);
+        for(let x = -10; x <= W + 10; x += 7)
+            ctx.lineTo(x, terrainY(x + scrollX));
+        ctx.lineTo(W, sceneH); ctx.closePath(); ctx.fill();
+
+        // Bright surface edge on terrain
+        ctx.strokeStyle = '#8ed66a';
+        ctx.lineWidth = 2.5;
+        ctx.beginPath();
+        for(let x = -10; x <= W + 10; x += 7) {
+            const y = terrainY(x + scrollX);
+            x === -10 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+
+        // Trees and flowers on terrain
+        drawTrees();
+        drawFlowers();
+
+        // Soft vignette at the sides — window-frame feel
+        const leftVig = ctx.createLinearGradient(0, 0, 60, 0);
+        leftVig.addColorStop(0, 'rgba(20,10,5,0.22)');
+        leftVig.addColorStop(1, 'rgba(20,10,5,0)');
+        ctx.fillStyle = leftVig; ctx.fillRect(0, 0, 60, sceneH);
+
+        const rightVig = ctx.createLinearGradient(W, 0, W - 60, 0);
+        rightVig.addColorStop(0, 'rgba(20,10,5,0.22)');
+        rightVig.addColorStop(1, 'rgba(20,10,5,0)');
+        ctx.fillStyle = rightVig; ctx.fillRect(W - 60, 0, 60, sceneH);
+    }
+
+    // ─── Audio ───────────────────────────────────────────────────────────────
+    let audioCtx=null, reverbNode=null, masterOut=null, audioReady=false;
+
+    function initAudio() {
+        if(audioReady) return;
+        audioCtx  = new (window.AudioContext || window.webkitAudioContext)();
+        masterOut = audioCtx.createGain();
+        masterOut.gain.value = 0.80;
+        masterOut.connect(audioCtx.destination);
+
+        // Long warm reverb tail
+        const len = Math.floor(audioCtx.sampleRate * 3.8);
+        const buf = audioCtx.createBuffer(2, len, audioCtx.sampleRate);
+        for(let ch = 0; ch < 2; ch++) {
+            const d = buf.getChannelData(ch);
+            for(let i = 0; i < len; i++)
+                d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 1.75);
+        }
+        reverbNode = audioCtx.createConvolver();
+        reverbNode.buffer = buf;
+        const revGain = audioCtx.createGain();
+        revGain.gain.value = 0.60;
+        reverbNode.connect(revGain); revGain.connect(masterOut);
+
+        audioReady = true;
+    }
+
+    // Quiet, dreamy drone — slow attack, three-oscillator pad
+    function startDrone(freq) {
+        if(!audioReady) return null;
+        const t = audioCtx.currentTime;
+
+        const osc1 = audioCtx.createOscillator(); // root
+        const osc2 = audioCtx.createOscillator(); // octave, slightly detuned
+        const osc3 = audioCtx.createOscillator(); // sub-octave triangle
+
+        osc1.type = 'sine';     osc1.frequency.value = freq;
+        osc2.type = 'sine';     osc2.frequency.value = freq * 2.0; osc2.detune.value = 5;
+        osc3.type = 'triangle'; osc3.frequency.value = freq * 0.5;
+
+        const g1 = audioCtx.createGain(); g1.gain.value = 0.50;
+        const g2 = audioCtx.createGain(); g2.gain.value = 0.20;
+        const g3 = audioCtx.createGain(); g3.gain.value = 0.30;
+
+        const env = audioCtx.createGain();
+        env.gain.setValueAtTime(0, t);
+        env.gain.linearRampToValueAtTime(0.045, t + 2.2);  // slow dreamy fade in
+
+        osc1.connect(g1); osc2.connect(g2); osc3.connect(g3);
+        [g1, g2, g3].forEach(g => g.connect(env));
+        env.connect(masterOut);
+        env.connect(reverbNode);
+
+        [osc1, osc2, osc3].forEach(o => o.start(t));
+        return { oscs:[osc1,osc2,osc3], env, freq };
+    }
+
+    // Brief chime on each terrain bounce
+    function bouncePing(freq) {
+        if(!audioReady) return;
+        const t = audioCtx.currentTime;
+        const osc = audioCtx.createOscillator();
+        osc.type = 'sine';
+        osc.frequency.value = freq;
+        const g = audioCtx.createGain();
+        g.gain.setValueAtTime(0.11, t);
+        g.gain.exponentialRampToValueAtTime(0.001, t + 0.60);
+        osc.connect(g); g.connect(masterOut); g.connect(reverbNode);
+        osc.start(t); osc.stop(t + 0.70);
+    }
+
+    function stopDrone(sound) {
+        if(!sound || !audioReady) return;
+        const t = audioCtx.currentTime;
+        sound.env.gain.cancelScheduledValues(t);
+        sound.env.gain.setValueAtTime(sound.env.gain.value, t);
+        sound.env.gain.linearRampToValueAtTime(0, t + 4.5);
+        setTimeout(() => { sound.oscs.forEach(o => { try { o.stop(); } catch(e) {} }); }, 5500);
+    }
+
+    // ─── Orbs ────────────────────────────────────────────────────────────────
+    let orbs = [];
+
+    function spawnOrb(note) {
+        if(orbs.length >= MAX_ORBS) return;
+        orbs.push({
+            x:       note.cx || W / 2,
+            y:       sceneH - 12,
+            vx:      (Math.random() - 0.5) * 20,   // barely any horizontal drift
+            vy:      -(215 + Math.random() * 110),  // fires upward
+            freq:    note.freq,
+            hue:     note.hue,
+            sound:   startDrone(note.freq),
+            bounces: 0,
+            alpha:   1,
+            trail:   []
+        });
+    }
+
+    function updateOrbs(dt) {
+        for(let i = orbs.length - 1; i >= 0; i--) {
+            const o = orbs[i];
+            o.vy += GRAVITY * dt;
+            o.x  += o.vx * dt;
+            o.y  += o.vy * dt;
+
+            // Wall bounce
+            if(o.x < ORB_RADIUS)   { o.x = ORB_RADIUS;   o.vx =  Math.abs(o.vx) * 0.75; }
+            if(o.x > W-ORB_RADIUS) { o.x = W-ORB_RADIUS; o.vx = -Math.abs(o.vx) * 0.75; }
+
+            // Terrain bounce — orb only collides on the way down
+            const ground = surfaceAt(o.x);
+            if(o.vy > 0 && o.y >= ground && o.bounces < MAX_BOUNCES) {
+                o.y   = ground;
+                o.vy  = -o.vy * BOUNCE_DAMP;
+                o.bounces++;
+                bouncePing(o.freq);
+                if(Math.abs(o.vy) < MIN_BOUNCE_VEL) o.bounces = MAX_BOUNCES;
+            }
+
+            o.trail.push({ x:o.x, y:o.y });
+            if(o.trail.length > 20) o.trail.shift();
+
+            if(o.bounces >= MAX_BOUNCES) {
+                o.alpha -= dt * 0.28;
+                if(o.alpha <= 0) {
+                    stopDrone(o.sound);
+                    orbs.splice(i, 1);
+                }
+            }
+        }
+    }
+
+    function drawOrbs() {
+        for(const o of orbs) {
+            // Soft comet trail
+            for(let i = 1; i < o.trail.length; i++) {
+                const age = i / o.trail.length;
+                ctx.save();
+                ctx.globalAlpha = age * 0.38 * o.alpha;
+                ctx.strokeStyle = `hsl(${o.hue},72%,62%)`;
+                ctx.lineWidth   = age * 4.5;
+                ctx.lineCap     = 'round';
+                ctx.beginPath();
+                ctx.moveTo(o.trail[i-1].x, o.trail[i-1].y);
+                ctx.lineTo(o.trail[i].x,   o.trail[i].y);
+                ctx.stroke();
+                ctx.restore();
+            }
+
+            // Bloom glow
+            const gr = ctx.createRadialGradient(o.x, o.y, 0, o.x, o.y, ORB_RADIUS * 4.5);
+            gr.addColorStop(0, `hsla(${o.hue},75%,88%,${0.32 * o.alpha})`);
+            gr.addColorStop(1, `hsla(${o.hue},65%,58%,0)`);
+            ctx.fillStyle = gr;
+            ctx.beginPath(); ctx.arc(o.x, o.y, ORB_RADIUS * 4.5, 0, Math.PI*2); ctx.fill();
+
+            // Orb — soft outer ring then crisp inner
+            ctx.save();
+            ctx.globalAlpha = 0.38 * o.alpha;
+            ctx.strokeStyle = `hsl(${o.hue},70%,72%)`;
+            ctx.lineWidth   = 7;
+            ctx.beginPath(); ctx.arc(o.x, o.y, ORB_RADIUS, 0, Math.PI*2); ctx.stroke();
+            ctx.globalAlpha = 0.92 * o.alpha;
+            ctx.strokeStyle = `hsl(${o.hue},80%,92%)`;
+            ctx.lineWidth   = 2;
+            ctx.beginPath(); ctx.arc(o.x, o.y, ORB_RADIUS, 0, Math.PI*2); ctx.stroke();
+            ctx.restore();
+        }
+    }
+
+    // ─── Keyboard ────────────────────────────────────────────────────────────
+    function drawKeyboard() {
+        // Panel background — warm dark wood feel
+        const panelGrad = ctx.createLinearGradient(0, sceneH, 0, H);
+        panelGrad.addColorStop(0, '#1c0e08');
+        panelGrad.addColorStop(1, '#120905');
+        ctx.fillStyle = panelGrad;
+        ctx.fillRect(0, sceneH, W, KEYBOARD_HEIGHT);
+
+        // Top border — soft green matching the scene
+        ctx.strokeStyle = 'rgba(110,210,80,0.55)';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.moveTo(0, sceneH); ctx.lineTo(W, sceneH); ctx.stroke();
+
+        // White keys
+        for(const n of whites) {
+            ctx.fillStyle = n.pressed ? '#d8f0d0' : '#f4eeff';
+            ctx.fillRect(n.x, n.y, n.w, n.h);
+            ctx.strokeStyle = '#2c1040';
+            ctx.lineWidth = 1;
+            ctx.strokeRect(n.x, n.y, n.w, n.h);
+            // C note label
+            if(n.pc === 0) {
+                ctx.fillStyle = 'rgba(60,20,80,0.45)';
+                ctx.font = '10px Georgia,serif';
+                ctx.textAlign = 'center';
+                ctx.fillText(n.name, n.x + n.w / 2, n.y + n.h - 7);
+            }
+        }
+
+        // Black keys
+        for(const n of blacks) {
+            if(!n.x) continue;
+            ctx.fillStyle = n.pressed ? '#3a1a50' : '#0c0418';
+            ctx.fillRect(n.x, n.y, n.w, n.h);
+        }
+    }
+
+    // ─── Main loop ───────────────────────────────────────────────────────────
+    let lastT = 0;
+
+    function update(dt) {
+        scrollX += SCROLL_SPEED * dt;
+        updateClouds(dt);
+        updateOrbs(dt);
+    }
+
+    function render() {
+        ctx.clearRect(0, 0, W, H);
+        drawScene();
+        drawOrbs();
+        drawKeyboard();
+    }
+
+    function frame(t) {
+        const dt = Math.min((t - lastT) / 1000, 0.05);
+        lastT = t;
+        update(dt);
+        render();
+        requestAnimationFrame(frame);
+    }
+
+    // ─── Input ───────────────────────────────────────────────────────────────
+    function handleInput(x, y) {
+        if(!audioReady) return;
+        // Black keys checked first — they overlap white keys visually
+        for(const n of blacks) {
+            if(!n.x) continue;
+            if(x >= n.x && x <= n.x+n.w && y >= n.y && y <= n.y+n.h) {
+                n.pressed = true;
+                setTimeout(() => { n.pressed = false; }, 130);
+                spawnOrb(n);
+                return;
+            }
+        }
+        for(const n of whites) {
+            if(x >= n.x && x <= n.x+n.w && y >= n.y && y <= n.y+n.h) {
+                n.pressed = true;
+                setTimeout(() => { n.pressed = false; }, 130);
+                spawnOrb(n);
+                return;
+            }
+        }
+    }
+
+    // ─── Init ────────────────────────────────────────────────────────────────
+    layout();
+    window.addEventListener('resize', layout);
+
+    overlay.addEventListener('click', () => {
+        initAudio();
+        overlay.style.opacity = '0';
+        setTimeout(() => { overlay.style.display = 'none'; }, 950);
+        lastT = performance.now();
+        requestAnimationFrame(frame);
+    });
+
+    canvas.addEventListener('mousedown', e => {
+        const r = canvas.getBoundingClientRect();
+        handleInput(e.clientX - r.left, e.clientY - r.top);
+    });
+
+    canvas.addEventListener('touchstart', e => {
+        e.preventDefault();
+        const r = canvas.getBoundingClientRect();
+        for(const t of e.changedTouches)
+            handleInput(t.clientX - r.left, t.clientY - r.top);
+    }, { passive: false });
+
+})();
+</script>
+</body>
+</html>

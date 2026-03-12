@@ -971,11 +971,8 @@ canvas { display: block; width: 100%; height: 100%; touch-action: none; }
 
     // ─── Orb physics ───
     function pickTarget() {
-        const r=Math.random();
-        if(r<0.20) return {type:'shape'};
-        if(r<0.46) return {type:'terrain',layer:0};
-        if(r<0.73) return {type:'terrain',layer:1};
-        return {type:'terrain',layer:2};
+        // Orbs only bounce on the foreground neon line (layer 2) or 3D shapes
+        return Math.random() < 0.35 ? {type:'shape'} : {type:'terrain',layer:2};
     }
 
     function fireOrb(note, chordHue) {
@@ -1169,14 +1166,13 @@ canvas { display: block; width: 100%; height: 100%; touch-action: none; }
                             break;
                         }
                     }
-                    // Fading orbs: if no shape in range fall back to the nearest terrain line
-                    // so they never escape the visible scene (but still only land on a neon line)
-                    if(!hit && o.bounces >= MAX_BOUNCES) {
+                    // No shape in range — always fall back to the nearest terrain line
+                    if(!hit) {
                         surfY = surfaceAt(o.x, 2);
                         hit   = (o.y >= surfY - o.radius);
                     }
                 } else {
-                    surfY = surfaceAt(o.x, o.target.layer);
+                    surfY = surfaceAt(o.x, 2); // always foreground line only
                     hit   = (o.y >= surfY - o.radius);
                 }
 
@@ -1208,7 +1204,30 @@ canvas { display: block; width: 100%; height: 100%; touch-action: none; }
             }
 
             if(o.bounces>=MAX_BOUNCES) o.alpha-=dt*0.28; // slow graceful fade, continues trajectory
-            if(o.x<-120||o.x>W+120||o.alpha<=0||o.life>40||o.y>sceneH+120){
+
+            // Absolute safety net — position clamp is unconditional, no exceptions.
+            // The orb can NEVER physically cross the foreground terrain line.
+            {
+                const floorY = surfaceAt(o.x, 2);
+                if(o.y >= floorY - o.radius) {
+                    o.y = floorY - o.radius - 2;   // hard clamp, always
+                    if(o.vy > 0) {
+                        if(o.bounceCooldown <= 0) {
+                            // Normal bounce
+                            o.vy = -Math.abs(o.vy) * BOUNCE_DAMP;
+                            o.vx *= 0.92;
+                            o.bounceCooldown = 0.12;
+                            if(o.bounces < MAX_BOUNCES) o.bounces++;
+                        } else {
+                            // Still in cooldown but penetrating floor —
+                            // kill downward velocity so gravity can't push it through
+                            o.vy = 0;
+                        }
+                    }
+                }
+            }
+
+            if(o.x<-120||o.x>W+120||o.alpha<=0||o.life>40||o.y>sceneH-5){
                 releaseSound(o.sound); orbs.splice(i,1);
             }
         }
